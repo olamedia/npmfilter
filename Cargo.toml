@@ -1,6 +1,6 @@
 [package]
 name = "npmfilter"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 description = "Local npm registry filtering daemon: release-age and install-script gates with content-pinned manual approval"
 readme = "README.md"
@@ -60,6 +60,7 @@ assets = [
     ["target/release/npmfilter", "usr/bin/npmfilter", "755"],
     ["packaging/config.toml", "etc/npmfilter/config.toml", "644"],
     ["README.md", "usr/share/doc/npmfilter/README.md", "644"],
+    ["INSTALL.md", "usr/share/doc/npmfilter/INSTALL.md", "644"],
     ["USAGE.md", "usr/share/doc/npmfilter/USAGE.md", "644"],
     ["SECURITY.md", "usr/share/doc/npmfilter/SECURITY.md", "644"],
 ]
@@ -87,6 +88,7 @@ assets = [
     { source = "packaging/config.toml", dest = "/etc/npmfilter/config.toml", mode = "644", config = true },
     { source = "packaging/systemd/npmfilter.service", dest = "/usr/lib/systemd/system/npmfilter.service", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/npmfilter/README.md", mode = "644", doc = true },
+    { source = "INSTALL.md", dest = "/usr/share/doc/npmfilter/INSTALL.md", mode = "644", doc = true },
     { source = "USAGE.md", dest = "/usr/share/doc/npmfilter/USAGE.md", mode = "644", doc = true },
     { source = "SECURITY.md", dest = "/usr/share/doc/npmfilter/SECURITY.md", mode = "644", doc = true },
 ]
@@ -107,7 +109,7 @@ npmfilter is installed. It is NOT running, and it is NOT enabled.
     sudo systemctl enable --now npmfilter
 
 Nothing resolves through it until you adopt it — see
-/usr/share/doc/npmfilter/README.md. Seed first:
+/usr/share/doc/npmfilter/INSTALL.md. Seed first:
 
     npmfilter seed ~/your-project --dry-run
 

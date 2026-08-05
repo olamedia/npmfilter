@@ -236,6 +236,18 @@ Response bodies never reproduce a tampered hash, an install command, or anything
 else the upstream chose. The evidence is in the audit log and on the control
 socket, where only someone already trusted to approve packages can read it.
 
+### Which methods and paths get through
+
+`GET` and `HEAD`, plus `POST` to `/-/v1/search` and
+`/-/npm/v1/security/advisories/bulk`, are the entire allow-list. Those two POST
+endpoints are what `npm search` and `npm audit` use, and both are proxied
+untouched — as is any path the daemon does not recognise.
+
+Everything else answers `405 publish_refused`: `PUT`, `DELETE`, `PATCH`, `POST`
+to a package path, and any other verb, `COPY` and `PROPFIND` included. npmfilter
+holds no credentials, so a publish belongs at the registry that should receive
+it. `allow_publish_passthrough = true` relays them instead and audits every one.
+
 ---
 
 ## The audit log
