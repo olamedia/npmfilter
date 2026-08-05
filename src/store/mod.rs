@@ -53,7 +53,7 @@ pub const DEFAULT_STATE_PATH: &str = "/var/lib/npmfilter/rules.db";
 /// back to `dist.shasum`, so those versions are re-observed under a value that can actually
 /// change — and a version publishing no hash at all is withheld
 /// ([`crate::policy::BlockReason::NoIntegrity`]) rather than recorded as `NULL` again.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// How long a `seen` row survives without being observed again.
 ///
@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS rules (
     verdict        TEXT    NOT NULL CHECK (verdict IN ('allow', 'deny')),
     scripts_json   TEXT,
     scripts_sha256 TEXT,
+    pins_json      TEXT,
     reason         TEXT,
     actor          TEXT,
     created_ts     INTEGER NOT NULL,
@@ -133,11 +134,13 @@ CREATE INDEX IF NOT EXISTS audit_name_idx ON audit (name);
 ";
 
 /// Columns of `rules`, in the order every `SELECT` below reads them.
-const RULE_COLUMNS: &str = "id, name, version, integrity, verdict, scripts_json, scripts_sha256, reason, actor, created_ts";
+const RULE_COLUMNS: &str = "id, name, version, integrity, verdict, scripts_json, scripts_sha256, pins_json, reason, actor, created_ts";
 
 /// Anything that can go wrong talking to the state database.
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("a rule's file pins could not be read or written as JSON")]
+    PinsJson(#[source] serde_json::Error),
     #[error("failed to create the npmfilter state directory {path}")]
     StateDir {
         path: PathBuf,
@@ -279,6 +282,56 @@ impl ScriptSet {
     }
 }
 
+/// The files an approval was pinned to: package-relative path -> lowercase-hex sha256.
+///
+/// Every digest here was computed by the daemon from the tarball it fetched itself. A caller
+/// may *assert* a hash — and the daemon rejects the approval if the assertion is wrong — but
+/// no caller-supplied digest is ever stored, so a pin cannot describe bytes that were not
+/// actually published.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinSet {
+    files: BTreeMap<String, String>,
+}
+
+impl PinSet {
+    /// Build from path/digest pairs.
+    pub fn from_files<K, V, I>(files: I) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        Self {
+            files: files
+                .into_iter()
+                .map(|(path, digest)| (path.into(), digest.into()))
+                .collect(),
+        }
+    }
+
+    /// The pinned files, sorted by path.
+    pub fn files(&self) -> &BTreeMap<String, String> {
+        &self.files
+    }
+
+    /// Whether anything is pinned at all.
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Canonical JSON, for the `pins_json` column.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.files)
+    }
+
+    /// Parse a `pins_json` column value.
+    pub fn from_json(raw: &str) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            files: serde_json::from_str(raw)?,
+        })
+    }
+}
+
 /// A rule about to be recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewRule {
@@ -289,6 +342,8 @@ pub struct NewRule {
     pub integrity: Option<String>,
     /// The install hooks the approval covers.
     pub scripts: Option<ScriptSet>,
+    /// The files the approval was pinned to, hashed by the daemon.
+    pub pins: Option<PinSet>,
     pub reason: Option<String>,
     pub actor: Option<String>,
 }
@@ -306,9 +361,16 @@ impl NewRule {
             verdict: Verdict::Allow,
             integrity: Some(integrity.into()),
             scripts: None,
+            pins: None,
             reason: None,
             actor: None,
         }
+    }
+
+    /// Pin the approval to the files an agent reviewed, hashed by the daemon.
+    pub fn with_pins(mut self, pins: PinSet) -> Self {
+        self.pins = Some(pins);
+        self
     }
 
     /// An outright block.
@@ -319,6 +381,7 @@ impl NewRule {
             verdict: Verdict::Deny,
             integrity: None,
             scripts: None,
+            pins: None,
             reason: None,
             actor: None,
         }
@@ -378,6 +441,8 @@ pub struct StoredRule {
     pub rule: Rule,
     /// The canonical JSON of the approved install hooks.
     pub scripts_json: Option<String>,
+    /// The files this approval pinned, if any were named.
+    pub pins: Option<PinSet>,
     pub created: DateTime<Utc>,
 }
 
@@ -604,16 +669,23 @@ impl Store {
         now: DateTime<Utc>,
     ) -> Result<StoredRule, StoreError> {
         let scripts_json = rule.scripts.as_ref().map(ScriptSet::json);
+        // A pin set that fails to serialise must not silently become "nothing pinned": the
+        // rule would then read as reviewed-without-pins, which is a different claim.
+        let pins_json = match rule.pins.as_ref() {
+            Some(pins) => Some(pins.to_json().map_err(StoreError::PinsJson)?),
+            None => None,
+        };
         let scripts_sha256 = rule.scripts.as_ref().map(ScriptSet::sha256);
         let conn = self.lock();
         let id: i64 = conn.query_row(
-            "INSERT INTO rules (name, version, integrity, verdict, scripts_json, scripts_sha256, reason, actor, created_ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO rules (name, version, integrity, verdict, scripts_json, scripts_sha256, pins_json, reason, actor, created_ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT (name, version) DO UPDATE SET
                  integrity      = excluded.integrity,
                  verdict        = excluded.verdict,
                  scripts_json   = excluded.scripts_json,
                  scripts_sha256 = excluded.scripts_sha256,
+                 pins_json      = excluded.pins_json,
                  reason         = excluded.reason,
                  actor          = excluded.actor,
                  created_ts     = excluded.created_ts
@@ -625,6 +697,7 @@ impl Store {
                 verdict_str(rule.verdict),
                 scripts_json,
                 scripts_sha256,
+                pins_json,
                 rule.reason,
                 rule.actor,
                 now.timestamp(),
@@ -643,6 +716,7 @@ impl Store {
                 actor: rule.actor.clone(),
             },
             scripts_json,
+            pins: rule.pins.clone(),
             created: now,
         })
     }
@@ -1296,6 +1370,7 @@ type RuleRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
     i64,
 );
 
@@ -1311,6 +1386,7 @@ fn rule_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RuleRow> {
         row.get(7)?,
         row.get(8)?,
         row.get(9)?,
+        row.get(10)?,
     ))
 }
 
@@ -1323,10 +1399,17 @@ fn stored_rule(raw: RuleRow) -> Result<StoredRule, StoreError> {
         verdict,
         scripts_json,
         scripts_sha256,
+        pins_json,
         reason,
         actor,
         created,
     ) = raw;
+    // A pins column that will not parse is reported, not swallowed: an approval whose pins
+    // cannot be read is not an approval whose pins are empty.
+    let pins = match pins_json.as_deref() {
+        Some(raw) => Some(PinSet::from_json(raw).map_err(StoreError::PinsJson)?),
+        None => None,
+    };
     Ok(StoredRule {
         id,
         rule: Rule {
@@ -1339,6 +1422,7 @@ fn stored_rule(raw: RuleRow) -> Result<StoredRule, StoreError> {
             actor,
         },
         scripts_json,
+        pins,
         created: timestamp(created)?,
     })
 }

@@ -259,18 +259,30 @@ The flow, once a `bun install` or `npm install` has failed:
 1. **`npmfilter_recent_blocks`** — what was withheld, which version, which gate,
    and the offending script commands with their hashes. This is the entry point;
    it also tells you the next step per block.
-2. **`npmfilter_inspect(package, version)`** — fetches that version's tarball,
-   streams it, reads only `package.json` and discards every other byte. Returns
-   publish time and age, `dist.integrity`, the install hooks with per-hook
-   hashes, maintainers and `_npmUser`, provenance attestation presence, file
-   count and unpacked size as claimed versus observed — and the **script delta
-   against the previous published version**. That delta is the highest-signal
-   field here: a version that *newly acquires* an install hook is exactly the
-   shape of a compromise (`keyv@6.0.0` grew a `preinstall` that 5.x never had).
-   It also flags when the tarball's hooks differ from the packument's.
-3. **`npmfilter_allow(package, version, reason)`** — records the approval pinned
-   to the integrity and script hashes the registry is publishing right now. The
-   next request serves that version.
+2. **`npmfilter_inspect(package, version)`** — fetches that version's tarball and
+   streams it, keeping only `package.json` and a sha256 per entry; no package
+   bytes are ever stored. Returns publish time and age, `dist.integrity`, the
+   install hooks with per-hook hashes, maintainers and `_npmUser`, provenance
+   attestation presence, file count and unpacked size as claimed versus observed,
+   a **digest for every published file** — and the **script delta against the
+   previous published version**. That delta is the highest-signal field here: a
+   version that *newly acquires* an install hook is exactly the shape of a
+   compromise (`keyv@6.0.0` grew a `preinstall` that 5.x never had). It also flags
+   when the tarball's hooks differ from the packument's, and — once the package
+   has a pinned approval — reports every pinned file as unchanged, changed, or
+   absent in this version.
+3. **`npmfilter_allow(package, version, reason, pins)`** — records the approval
+   pinned to the integrity and script hashes the registry is publishing right now,
+   plus any files named in `pins`. The daemon hashes those files out of the
+   published tarball itself and stores only its own digests: a path the tarball
+   does not contain, or a caller-supplied digest that disagrees, fails the whole
+   approval. The next request serves that version.
+
+   Pinning is **evidence, not enforcement** — `dist.integrity` already covers every
+   byte and npm verifies it, so nothing can be swapped under an approved version.
+   What it buys is the next one: a `postinstall: node install.js` reads identically
+   in every release, so the command-level delta cannot see `install.js` being
+   rewritten. A pinned digest can.
 
 Also available: `npmfilter_deny(package, version, reason)`,
 `npmfilter_rules(filter)`, `npmfilter_ledger(package)` (integrity history and any

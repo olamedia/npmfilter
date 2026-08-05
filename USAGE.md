@@ -79,7 +79,7 @@ Global options, available on all subcommands:
 |---|---|---|
 | `serve` | — | The daemon. Binds the HTTP listener and the control socket. |
 | `mcp` | — | stdio MCP shim. Register it with your MCP client; it talks to the socket. |
-| `inspect` | `<PACKAGE> [VERSION]` | Version defaults to newest published. Streams the tarball, reads only `package.json`, discards the rest. |
+| `inspect` | `<PACKAGE> [VERSION]` | Version defaults to newest published. Streams the tarball, keeps `package.json` and a sha256 per file, retains no package bytes. |
 | `allow` | `<PACKAGE> <VERSION>` `[-r, --reason]` | Pins to the integrity **and** script hashes the registry serves right now. |
 | `deny` | `<PACKAGE> <VERSION>` `[-r, --reason]` | Blocks outright, above every gate but the ledger. |
 | `rules` | `[-p, --package <PKG>]` | Lists allow/deny rules. |
@@ -123,8 +123,8 @@ every tool will fail on the socket — start a new login session, or register it
 | Tool | Purpose |
 |---|---|
 | `npmfilter_recent_blocks` | **Start here after a failed install.** What was withheld, which gate, the offending commands. |
-| `npmfilter_inspect` | Age, integrity, install hooks with hashes, maintainers, provenance, sizes claimed vs observed, and the **script delta against the previous version**. |
-| `npmfilter_allow` | Approve, pinned to current integrity + script hashes. |
+| `npmfilter_inspect` | Age, integrity, install hooks with hashes, maintainers, provenance, sizes claimed vs observed, the **script delta against the previous version**, a **sha256 per published file**, and — once the package has a pinned approval — how this version's files compare to the ones that approval pinned. |
+| `npmfilter_allow` | Approve, pinned to current integrity + script hashes, and optionally to **named files by content**. |
 | `npmfilter_deny` | Block outright. |
 | `npmfilter_rules` | List existing rules. |
 | `npmfilter_ledger` | Integrity history and tamper events for one package. |
@@ -133,6 +133,39 @@ every tool will fail on the socket — start a new login session, or register it
 The script delta is the highest-signal field. A version that *newly acquires* an
 install hook is the exact shape of a maintainer-account compromise — `keyv@6.0.0`
 grew a `preinstall` that 5.x never had.
+
+### Pinning files
+
+The script delta compares *command strings*. `postinstall: node install.js` reads
+identically in every version, and says nothing about what `install.js` contains — so
+"the commands did not change" is the weakest possible reassurance for exactly the
+packages that need the strongest.
+
+`npmfilter_inspect` therefore reports a sha256 for every file in the published
+tarball, and `npmfilter_allow` accepts a list of paths to pin:
+
+```sh
+npmfilter allow esbuild 0.25.12 \
+  --reason "reviewed install.js: downloads the platform binary from the registry" \
+  --pin install.js --pin lib/main.js
+```
+
+The daemon does not take the caller's word for any digest. It fetches the published
+tarball itself, hashes each named file, and stores **its own** computation. A path
+that is not in the tarball fails the approval outright, and a caller-supplied
+`sha256` that disagrees with the daemon's fails it too — an approval never records a
+digest npmfilter did not compute.
+
+Pinning adds **evidence, not enforcement**. `dist.integrity` already covers every
+byte of the tarball and npm verifies it on install; a pinned file cannot be swapped
+under an approved version. What pinning buys is the *next* version: when 0.25.13
+appears, `npmfilter_inspect` compares its files against what 0.25.12's approval
+pinned and reports each one as unchanged, changed, or absent. A changed install
+script under an unchanged command is the finding the command-level delta cannot
+produce.
+
+Up to 64 files may be pinned per approval. Paths are relative to the package root
+(the tarball's `package/` prefix stripped) — `install.js`, not `package/install.js`.
 
 Approvals from MCP and from a terminal are the same request to the same daemon and
 write the same audit rows. The actor recorded is the uid the kernel reports for the

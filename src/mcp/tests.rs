@@ -332,7 +332,7 @@ fn identical_hooks_report_no_change() {
     assert!(delta.removed.is_empty());
     assert_eq!(delta.unchanged.len(), 1);
     assert!(
-        delta.summary.contains("byte-identical to 0.21.4"),
+        delta.summary.contains("COMMANDS are identical to 0.21.4"),
         "{}",
         delta.summary
     );
@@ -487,6 +487,7 @@ fn the_inspect_report_carries_everything_design_asks_for() {
         json!([{ "name": "jaredwray", "email": "jared@test" }]);
 
     let scan = inspect::TarballScan {
+        files: Vec::new(),
         package_json: Some(json!({
             "name": "keyv", "version": "6.0.0",
             "scripts": { "preinstall": "node setup.mjs" }
@@ -559,6 +560,7 @@ fn a_tarball_whose_hooks_differ_from_the_packument_is_called_out() {
     packument["versions"]["6.0.0"]["scripts"] = json!({ "preinstall": "node build.js" });
 
     let scan = inspect::TarballScan {
+        files: Vec::new(),
         package_json: Some(json!({
             "name": "keyv", "version": "6.0.0",
             "scripts": { "preinstall": "node steal-credentials.js" }
@@ -1202,6 +1204,7 @@ async fn allow_pins_to_the_integrity_and_scripts_the_registry_currently_publishe
             "widget",
             "1.1.0",
             Some("reviewed the preinstall".to_owned()),
+            &[],
             &actor(),
         )
         .await
@@ -1252,4 +1255,96 @@ async fn inspecting_a_version_that_was_never_published_is_a_parameter_error() {
         Err(error) => error,
     };
     assert!(error.to_string().contains("9.9.9"), "{error}");
+}
+
+// -- pin audit ------------------------------------------------------------------------------
+
+fn digest(path: &str, sha256: &str) -> crate::mcp::inspect::FileDigest {
+    crate::mcp::inspect::FileDigest {
+        path: path.to_owned(),
+        sha256: sha256.to_owned(),
+        size: 1,
+    }
+}
+
+/// The case pinning exists for: the hook command is unchanged, so the script delta reports
+/// nothing, but the file that command runs has different bytes.
+#[test]
+fn a_changed_pinned_file_is_reported_even_when_the_command_did_not_move() {
+    let pinned = std::collections::BTreeMap::from([
+        ("install.js".to_owned(), "a".repeat(64)),
+        ("lib/util.js".to_owned(), "b".repeat(64)),
+    ]);
+    let files = vec![
+        digest("install.js", &"c".repeat(64)),
+        digest("lib/util.js", &"b".repeat(64)),
+    ];
+
+    let audit = crate::mcp::inspect::pin_audit("0.25.12", &pinned, &files);
+
+    assert_eq!(audit.unchanged, vec!["lib/util.js".to_owned()]);
+    assert_eq!(audit.changed.len(), 1);
+    assert_eq!(audit.changed[0].path, "install.js");
+    assert_eq!(audit.changed[0].pinned_sha256, "a".repeat(64));
+    assert_eq!(audit.changed[0].observed_sha256, "c".repeat(64));
+    assert!(audit.missing.is_empty());
+    assert!(
+        audit.summary.contains("install.js"),
+        "the summary must name the file that moved: {}",
+        audit.summary
+    );
+}
+
+/// A pinned path the new version does not ship at all is neither "same" nor "changed" — it is
+/// a third answer, and collapsing it into either would be a lie.
+#[test]
+fn a_pinned_path_the_version_does_not_publish_is_reported_as_missing() {
+    let pinned = std::collections::BTreeMap::from([("install.js".to_owned(), "a".repeat(64))]);
+
+    let audit =
+        crate::mcp::inspect::pin_audit("1.0.0", &pinned, &[digest("index.js", &"d".repeat(64))]);
+
+    assert!(audit.unchanged.is_empty());
+    assert!(audit.changed.is_empty());
+    assert_eq!(audit.missing, vec!["install.js".to_owned()]);
+}
+
+#[test]
+fn an_all_matching_audit_says_so_without_qualification() {
+    let pinned = std::collections::BTreeMap::from([("install.js".to_owned(), "a".repeat(64))]);
+
+    let audit =
+        crate::mcp::inspect::pin_audit("1.0.0", &pinned, &[digest("install.js", &"a".repeat(64))]);
+
+    assert_eq!(audit.unchanged, vec!["install.js".to_owned()]);
+    assert!(audit.changed.is_empty() && audit.missing.is_empty());
+    assert!(
+        audit.summary.contains("byte-identical"),
+        "{}",
+        audit.summary
+    );
+}
+
+/// The daemon must never claim more than it checked: comparing command strings says nothing
+/// about the files those commands run, and the wording has to admit that. This is the
+/// companion to [`identical_hooks_report_no_change`], which checks the same summary from the
+/// other side.
+#[test]
+fn an_unchanged_command_delta_does_not_claim_the_files_are_unchanged() {
+    let previous = crate::store::ScriptSet::from_hooks([("postinstall", "node install.js")]);
+    let current = crate::store::ScriptSet::from_hooks([("postinstall", "node install.js")]);
+
+    let delta = crate::mcp::inspect::script_delta(Some(("1.0.0", &previous)), &current);
+
+    assert!(delta.changed.is_empty() && delta.added.is_empty());
+    assert!(
+        !delta.summary.contains("byte-identical"),
+        "an identical command string is not a byte-identical package: {}",
+        delta.summary
+    );
+    assert!(
+        delta.summary.contains("not compared"),
+        "the summary must state what was NOT checked: {}",
+        delta.summary
+    );
 }

@@ -1327,3 +1327,38 @@ fn the_state_database_is_created_owner_only() {
         assert_eq!(wal_mode & 0o077, 0, "wal mode was {wal_mode:04o}");
     }
 }
+
+// -- file pins ------------------------------------------------------------------------------
+
+/// A pin set round-trips through the column, and a rule recorded without pins is
+/// distinguishable from one pinned to nothing — "reviewed before pinning existed" and
+/// "reviewed and pinned no files" are different claims.
+#[test]
+fn file_pins_round_trip_and_absent_is_not_empty() {
+    let store = store();
+    let now = now();
+
+    let pinned = NewRule::allow("esbuild", "0.25.12", "sha512-aaa")
+        .with_pins(PinSet::from_files([("install.js", "a".repeat(64))]));
+    store.record_rule(&pinned, now).expect("record pinned");
+
+    let bare = NewRule::allow("lodash", "4.17.21", "sha512-bbb");
+    store.record_rule(&bare, now).expect("record unpinned");
+
+    let rules = store.list_rules(&RuleFilter::default()).expect("list");
+    let esbuild = rules
+        .iter()
+        .find(|rule| rule.rule.name == "esbuild")
+        .expect("esbuild rule");
+    let lodash = rules
+        .iter()
+        .find(|rule| rule.rule.name == "lodash")
+        .expect("lodash rule");
+
+    let pins = esbuild.pins.as_ref().expect("pins survive the round trip");
+    assert_eq!(pins.files().get("install.js"), Some(&"a".repeat(64)));
+    assert!(
+        lodash.pins.is_none(),
+        "a rule recorded without pins must stay None, not become an empty set"
+    );
+}

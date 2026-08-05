@@ -1,7 +1,8 @@
 //! `npmfilter_inspect` — DESIGN.md "MCP surface".
 //!
-//! Fetches the tarball for one published version, **streams** it, reads only `package.json`
-//! out of the tar and discards every other byte. Nothing is ever written to disk: the download
+//! Fetches the tarball for one published version, **streams** it, and keeps only
+//! `package.json` and a sha256 per entry — every other byte is discarded as it passes.
+//! Nothing is ever written to disk: the download
 //! is piped chunk-by-chunk into a blocking decoder and each entry's body is skipped as the tar
 //! reader walks past it. Three hard limits — compressed bytes, decompressed bytes and entry
 //! count — mean a hostile tarball cannot exhaust memory or spin the reader forever.
@@ -10,6 +11,7 @@
 //! version: a version that newly acquires an install hook is exactly the compromise shape
 //! (`keyv@6.0.0` gaining a `preinstall` when 5.x had none).
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -68,6 +70,13 @@ pub struct TarballScan {
     pub package_json: Option<Value>,
     /// The path that `package.json` was read from, e.g. `package/package.json`.
     pub package_json_path: Option<String>,
+    /// Every regular file in the archive with its sha256, package-relative and sorted.
+    ///
+    /// Digests, never contents: each entry is hashed as it streams past and its bytes are
+    /// dropped. This is what an approval can be pinned to, and it is the only way to answer
+    /// "which files changed between these two versions" at all — a packument publishes
+    /// `fileCount` and `unpackedSize` and no per-file digest whatsoever.
+    pub files: Vec<FileDigest>,
     /// How many regular files the archive holds.
     pub file_count: u64,
     /// The sum of those files' sizes — the same quantity npm publishes as `unpackedSize`.
@@ -114,6 +123,18 @@ pub enum InspectError {
     Tarball(#[from] TarballError),
     #[error("the tarball reader task failed")]
     Join(#[source] tokio::task::JoinError),
+}
+
+/// One file in a published tarball, by path and content digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileDigest {
+    /// Package-relative path, e.g. `install.js`. The archive's root directory is stripped so
+    /// a pin means the same file whatever that root happens to be called.
+    pub path: String,
+    /// Lowercase-hex sha256 of the file's contents.
+    pub sha256: String,
+    /// Size in bytes, as the archive header declares it.
+    pub size: u64,
 }
 
 /// One install-hook command and the sha256 of that exact command string.
@@ -183,10 +204,105 @@ pub struct ScriptDelta {
     pub removed: Vec<HookCommand>,
     /// Hooks present in both, with a different command.
     pub changed: Vec<HookChange>,
-    /// Hooks present in both, byte-identical.
+    /// Hooks present in both with the same command string. The *files* those commands run
+    /// are NOT compared here — a `postinstall: node install.js` that is "unchanged" says
+    /// nothing about install.js. Pin the file to cover that.
     pub unchanged: Vec<HookCommand>,
     /// One sentence naming what the delta means.
     pub summary: String,
+}
+
+/// What an earlier approval's pinned files look like in the version being inspected.
+///
+/// The script delta above compares command strings. This compares the bytes those commands
+/// run: an approval that pinned `install.js` in 0.25.12 makes 0.25.13's `install.js` either
+/// provably the same file or provably a different one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PinAudit {
+    /// The version whose approval recorded these pins.
+    pub pinned_version: String,
+    /// Pinned files this version publishes with identical bytes.
+    pub unchanged: Vec<String>,
+    /// Pinned files this version publishes with different bytes. **Read every one of these
+    /// before approving**: a changed install script under an unchanged command is the shape
+    /// the command-level delta cannot see.
+    pub changed: Vec<PinChange>,
+    /// Pinned paths this version does not publish at all.
+    pub missing: Vec<String>,
+    /// One sentence naming what the comparison found.
+    pub summary: String,
+}
+
+/// One pinned file whose bytes moved between the approved version and this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PinChange {
+    /// Path inside the package.
+    pub path: String,
+    /// The digest the earlier approval pinned.
+    pub pinned_sha256: String,
+    /// The digest this version publishes.
+    pub observed_sha256: String,
+}
+
+/// Compare an earlier approval's pins against the files this version actually publishes.
+///
+/// `pinned` is `(version, path -> sha256)` as recorded by the approval; `files` is what the
+/// daemon just hashed out of the tarball.
+pub fn pin_audit(
+    pinned_version: &str,
+    pinned: &BTreeMap<String, String>,
+    files: &[FileDigest],
+) -> PinAudit {
+    let observed: BTreeMap<&str, &str> = files
+        .iter()
+        .map(|file| (file.path.as_str(), file.sha256.as_str()))
+        .collect();
+
+    let mut unchanged = Vec::new();
+    let mut changed = Vec::new();
+    let mut missing = Vec::new();
+    for (path, pinned_sha256) in pinned {
+        match observed.get(path.as_str()) {
+            Some(observed_sha256) if *observed_sha256 == pinned_sha256.as_str() => {
+                unchanged.push(path.clone());
+            }
+            Some(observed_sha256) => changed.push(PinChange {
+                path: path.clone(),
+                pinned_sha256: pinned_sha256.clone(),
+                observed_sha256: (*observed_sha256).to_owned(),
+            }),
+            None => missing.push(path.clone()),
+        }
+    }
+
+    let summary = if !changed.is_empty() {
+        format!(
+            "{} of {} file(s) pinned by {pinned_version} changed: {}",
+            changed.len(),
+            pinned.len(),
+            changed
+                .iter()
+                .map(|change| change.path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else if !missing.is_empty() {
+        format!(
+            "{} file(s) pinned by {pinned_version} are not published here: {}",
+            missing.len(),
+            missing.join(", ")
+        )
+    } else {
+        format!("every file pinned by {pinned_version} is byte-identical in this version",)
+    };
+
+    PinAudit {
+        pinned_version: pinned_version.to_owned(),
+        unchanged,
+        changed,
+        missing,
+        summary,
+    }
 }
 
 /// Whether a provenance attestation was published alongside the version.
@@ -242,6 +358,9 @@ pub struct InspectReport {
     pub scripts_match_packument: bool,
     /// The install-hook delta against the previous published version.
     pub script_delta: ScriptDelta,
+    /// How this version's files compare to the ones an earlier approval pinned, when the
+    /// package has such an approval. `None` means no earlier approval named any file.
+    pub pin_audit: Option<PinAudit>,
     /// `maintainers`, rendered `name <email>`.
     pub maintainers: Vec<String>,
     /// `_npmUser` — the account that published this exact version.
@@ -254,6 +373,14 @@ pub struct InspectReport {
     pub unpacked_size: Measured,
     /// How many compressed bytes were read.
     pub compressed_bytes: u64,
+    /// Every file in the tarball with its sha256 — the manifest an approval pins against.
+    ///
+    /// Capped at [`MAX_REPORTED_FILES`] entries so a package with thousands of files does not
+    /// make the report unreadable; `files_truncated` says when that happened, and the count is
+    /// always exact in `file_count`.
+    pub files: Vec<FileDigest>,
+    /// Whether `files` was cut short by the cap.
+    pub files_truncated: bool,
     /// The limits that were in force.
     pub limits: TarballLimits,
     /// Anything worth the caller's attention before approving.
@@ -443,7 +570,10 @@ pub fn script_delta(previous: Option<(&str, &ScriptSet)>, current: &ScriptSet) -
     } else if current.is_empty() {
         format!("neither {previous_version} nor this version declares an install hook")
     } else {
-        format!("install hooks are byte-identical to {previous_version}")
+        format!(
+            "the install-hook COMMANDS are identical to {previous_version}; the files those \
+             commands run were not compared — pin them to cover that"
+        )
     };
 
     ScriptDelta {
@@ -458,7 +588,7 @@ pub fn script_delta(previous: Option<(&str, &ScriptSet)>, current: &ScriptSet) -
     }
 }
 
-/// Stream a gzipped npm tarball and pull only `package.json` out of it.
+/// Stream a gzipped npm tarball, pulling `package.json` out of it and hashing every entry.
 ///
 /// Every other entry's bytes are walked past and discarded — nothing but `package.json` is
 /// ever held. The three limits in [`TarballLimits`] are enforced as the stream is consumed,
@@ -512,6 +642,7 @@ fn scan_entries<R: Read>(
     let mut scan = TarballScan {
         package_json: None,
         package_json_path: None,
+        files: Vec::new(),
         file_count: 0,
         unpacked_bytes: 0,
         compressed_bytes: 0,
@@ -559,11 +690,44 @@ fn scan_entries<R: Read>(
             }
             scan.package_json =
                 Some(serde_json::from_slice(&buffer).map_err(TarballError::PackageJson)?);
-            scan.package_json_path = Some(path);
+            scan.package_json_path = Some(path.clone());
+            scan.files.push(FileDigest {
+                path: package_relative(&path),
+                sha256: hex_encode(Sha256::digest(&buffer).as_slice()),
+                size: u64::try_from(buffer.len()).unwrap_or(u64::MAX),
+            });
+        } else if is_file {
+            // Hashed as it streams, then dropped. A 256 MiB archive costs one hasher, not an
+            // archive's worth of memory — the same discipline as reading only package.json.
+            let mut hasher = Sha256::new();
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = entry.read(&mut buffer).map_err(TarballError::Read)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            scan.files.push(FileDigest {
+                path: package_relative(&path),
+                sha256: hex_encode(hasher.finalize().as_slice()),
+                size,
+            });
         }
-        // Every other entry's body is skipped by the iterator — the bytes are never retained.
     }
+    scan.files.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(scan)
+}
+
+/// Strip the archive's root directory, so a pin reads `install.js` rather than
+/// `package/install.js` and still names the same file if that root is ever called something
+/// else. npm publishes `package/`, but nothing in the format requires it.
+fn package_relative(path: &str) -> String {
+    let trimmed = path.trim_start_matches("./");
+    match trimmed.split_once('/') {
+        Some((_root, rest)) if !rest.is_empty() => rest.to_owned(),
+        _ => trimmed.to_owned(),
+    }
 }
 
 /// `package/package.json` — the manifest at the archive root, whatever the root is called.
@@ -633,6 +797,9 @@ pub async fn fetch_and_scan(
 }
 
 /// Build the report for one version. `scan` is what streaming the tarball produced.
+/// How many per-file digests one report will carry.
+pub const MAX_REPORTED_FILES: usize = 500;
+
 pub fn build_report(
     package: &str,
     version: &str,
@@ -730,6 +897,7 @@ pub fn build_report(
         packument_scripts_sha256: packument_scripts.sha256(),
         scripts_match_packument,
         script_delta: delta,
+        pin_audit: None,
         maintainers: maintainers(&meta, packument),
         npm_user: meta
             .get("_npmUser")
@@ -747,6 +915,13 @@ pub fn build_report(
             observed: scan.unpacked_bytes,
         },
         compressed_bytes: scan.compressed_bytes,
+        files: scan
+            .files
+            .iter()
+            .take(MAX_REPORTED_FILES)
+            .cloned()
+            .collect(),
+        files_truncated: scan.files.len() > MAX_REPORTED_FILES,
         limits,
         notes,
     }

@@ -93,6 +93,15 @@ pub const MAX_CONCURRENT_CONNECTIONS: usize = 8;
 pub enum ValidationError {
     #[error("{field} is empty")]
     Empty { field: &'static str },
+    #[error("an approval may pin at most {limit} files")]
+    TooManyPins { limit: usize },
+    #[error(
+        "{field} must be a package-relative path: no leading `/`, no `.` or `..` segment, no \
+         backslash and no NUL"
+    )]
+    BadPinPath { field: &'static str },
+    #[error("{field} must be 64 lowercase hex characters")]
+    BadSha256 { field: &'static str },
     #[error("{field} is longer than the {limit}-byte limit")]
     TooLong { field: &'static str, limit: usize },
     #[error(
@@ -185,7 +194,29 @@ pub struct AllowArgs {
     /// Why.
     #[serde(default)]
     pub reason: Option<String>,
+    /// Files this approval is pinned to, package-relative.
+    ///
+    /// The daemon fetches the tarball and hashes each one itself; a caller may state the
+    /// digest it expects, and a mismatch fails the whole approval rather than being recorded.
+    #[serde(default)]
+    pub pins: Vec<PinRequest>,
 }
+
+/// One file an approval names, with an optional expected digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinRequest {
+    /// Package-relative path, e.g. `install.js`.
+    pub path: String,
+    /// The sha256 the caller believes this file has. Checked against the daemon's own
+    /// computation; never stored in place of it.
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+/// Most files a single approval may pin. Generous for review, bounded against a caller that
+/// would otherwise name every path in a large archive.
+pub const MAX_PINS: usize = 64;
 
 /// `deny` arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,7 +345,17 @@ impl Request {
             Request::Allow(args) => {
                 package_name("package", &args.package)?;
                 exact_version("version", &args.version)?;
-                optional_text("reason", args.reason.as_deref(), MAX_REASON_BYTES)
+                optional_text("reason", args.reason.as_deref(), MAX_REASON_BYTES)?;
+                if args.pins.len() > MAX_PINS {
+                    return Err(ValidationError::TooManyPins { limit: MAX_PINS });
+                }
+                for pin in &args.pins {
+                    pin_path("pins.path", &pin.path)?;
+                    if let Some(sha256) = &pin.sha256 {
+                        sha256_hex("pins.sha256", sha256)?;
+                    }
+                }
+                Ok(())
             }
             Request::Deny(args) => {
                 package_name("package", &args.package)?;
@@ -518,6 +559,46 @@ fn optional_text(
 /// The charset is what keeps a name from becoming a path or a URL of its own once it is
 /// appended to the upstream base — `..`, `/`, `?`, `#` and `%` are all out. The leading-dot
 /// and leading-underscore rules are npm's own and also exclude `.` and `..` outright.
+/// A package-relative file path inside a tarball.
+///
+/// Rejected outright: absolute paths, `.`/`..` segments, backslashes and NUL. A pin is only
+/// ever compared against a manifest the daemon built itself, so a traversing path could not
+/// escape anything — but a path that cannot name a real entry is a mistake worth reporting at
+/// the point it is made rather than silently storing a pin that can never match.
+pub fn pin_path(field: &'static str, value: &str) -> Result<(), ValidationError> {
+    if value.is_empty() {
+        return Err(ValidationError::Empty { field });
+    }
+    if value.len() > MAX_NAME_BYTES {
+        return Err(ValidationError::TooLong {
+            field,
+            limit: MAX_NAME_BYTES,
+        });
+    }
+    let bad = value.starts_with('/')
+        || value.contains('\\')
+        || value.contains('\0')
+        || value
+            .split('/')
+            .any(|segment| segment == "." || segment == ".." || segment.is_empty());
+    if bad {
+        return Err(ValidationError::BadPinPath { field });
+    }
+    Ok(())
+}
+
+/// Lowercase-hex sha256, exactly 64 characters.
+pub fn sha256_hex(field: &'static str, value: &str) -> Result<(), ValidationError> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(ValidationError::BadSha256 { field });
+    }
+    Ok(())
+}
+
 pub fn package_name(field: &'static str, value: &str) -> Result<(), ValidationError> {
     if value.is_empty() {
         return Err(ValidationError::Empty { field });

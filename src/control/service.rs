@@ -23,7 +23,8 @@ use crate::policy::Verdict;
 use crate::proxy::{PackumentFetch, Upstream};
 use crate::seed::{SeedVerification, seed_rule};
 use crate::store::{
-    AuditEntry, EVENT_SEED_REFUSED, NewRule, RuleFilter, ScriptSet, Severity, Store, StoreError,
+    AuditEntry, EVENT_SEED_REFUSED, NewRule, PinSet, RuleFilter, ScriptSet, Severity, Store,
+    StoreError,
 };
 
 use super::Actor;
@@ -144,7 +145,7 @@ impl ControlService {
                 self.inspect(&args.package, args.version.as_deref()).await?,
             ))),
             Request::Allow(args) => Ok(Answer::Rule(Box::new(
-                self.allow(&args.package, &args.version, args.reason, actor)
+                self.allow(&args.package, &args.version, args.reason, &args.pins, actor)
                     .await?,
             ))),
             Request::Deny(args) => Ok(Answer::Rule(Box::new(
@@ -226,6 +227,7 @@ impl ControlService {
             },
             policy: PolicyStatus {
                 min_age_days: self.config.min_age_days,
+                install_script_quarantine_days: self.config.install_script_quarantine_days,
                 bypass_scopes: self.config.bypass_scopes.clone(),
                 packument_ttl_secs: self.config.packument_ttl_secs,
             },
@@ -307,7 +309,7 @@ impl ControlService {
             .await
             .map_err(inspect_error)?;
 
-        Ok(inspect::build_report(
+        let mut report = inspect::build_report(
             package,
             &version,
             &source,
@@ -315,7 +317,40 @@ impl ControlService {
             &scan,
             self.limits,
             Utc::now(),
-        ))
+        );
+        report.pin_audit =
+            self.latest_pinned_approval(package, &version)
+                .await?
+                .map(|(pinned_version, pins)| {
+                    inspect::pin_audit(&pinned_version, pins.files(), &scan.files)
+                });
+        Ok(report)
+    }
+
+    /// The most recent allow rule for this package that named files, excluding the version
+    /// being inspected — comparing a version's pins against itself says nothing.
+    ///
+    /// The point of the comparison is "the reviewer approved these bytes once; are they still
+    /// the same bytes?", so the newest approval that named any file is the right baseline.
+    async fn latest_pinned_approval(
+        &self,
+        package: &str,
+        version: &str,
+    ) -> Result<Option<(String, PinSet)>, ControlError> {
+        let filter = RuleFilter::for_package(package).with_verdict(Verdict::Allow);
+        let rules = self
+            .with_store(move |store| store.list_rules(&filter))
+            .await?;
+        Ok(rules
+            .into_iter()
+            .filter(|rule| rule.rule.version != version)
+            .filter_map(|rule| {
+                rule.pins
+                    .filter(|pins| !pins.is_empty())
+                    .map(|pins| (rule.created, rule.rule.version, pins))
+            })
+            .max_by_key(|(created, _, _)| *created)
+            .map(|(_, version, pins)| (version, pins)))
     }
 
     /// DESIGN.md "MCP surface" — approval pinned to the current integrity and script hashes.
@@ -324,6 +359,7 @@ impl ControlService {
         package: &str,
         version: &str,
         reason: Option<String>,
+        pin_requests: &[crate::control::protocol::PinRequest],
         actor: &Actor,
     ) -> Result<RuleWritten, ControlError> {
         let packument = self.packument(package).await?;
@@ -337,9 +373,61 @@ impl ControlService {
         let scripts = ScriptSet::from_version(meta);
         let hooks = inspect::packument_hooks(meta);
 
+        // File pins. The caller names paths; the daemon fetches the tarball and hashes them
+        // itself. A caller-supplied digest is an assertion to be CHECKED, never a value to be
+        // stored: a stored pin must describe bytes that were actually published, or it would
+        // read as authoritative while describing nothing.
+        let pins = if pin_requests.is_empty() {
+            None
+        } else {
+            let tarball = meta
+                .get("dist")
+                .and_then(|dist| dist.get("tarball"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    inspect_error(InspectError::NoTarball {
+                        package: package.to_owned(),
+                        version: version.to_owned(),
+                    })
+                })?
+                .to_owned();
+            let scan = inspect::fetch_and_scan(self.upstream.client(), &tarball, self.limits)
+                .await
+                .map_err(inspect_error)?;
+            let mut resolved = Vec::with_capacity(pin_requests.len());
+            for request in pin_requests {
+                let found = scan
+                    .files
+                    .iter()
+                    .find(|file| file.path == request.path)
+                    .ok_or_else(|| {
+                        ControlError::Invalid(format!(
+                            "{package}@{version} ships no file at {}, so pinning it would record \
+                             an approval that can never match. Run inspect to see the manifest.",
+                            request.path
+                        ))
+                    })?;
+                if let Some(expected) = &request.sha256
+                    && expected != &found.sha256
+                {
+                    return Err(ControlError::Invalid(format!(
+                        "{package}@{version}: {} is {} but the approval asserted {}. The \
+                         published bytes are not the ones that were inspected — nothing was \
+                         recorded. Re-inspect before approving.",
+                        request.path, found.sha256, expected
+                    )));
+                }
+                resolved.push((found.path.clone(), found.sha256.clone()));
+            }
+            Some(PinSet::from_files(resolved))
+        };
+
         let mut rule = NewRule::allow(package, version, integrity)
             .with_scripts(scripts)
             .with_actor(actor.render());
+        if let Some(pins) = pins.clone() {
+            rule = rule.with_pins(pins);
+        }
         if let Some(reason) = reason {
             rule = rule.with_reason(reason);
         }
@@ -364,20 +452,34 @@ impl ControlService {
             .flatten()
             .filter(|clears_at| *clears_at > now);
 
+        let pinned = pins
+            .as_ref()
+            .map(|pins| {
+                format!(
+                    " Pinned to {} reviewed file(s): {}.",
+                    pins.files().len(),
+                    pins.files().keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+            })
+            .unwrap_or_default();
         let effect = match (&clears_at, hooks.is_empty()) {
             (Some(clears_at), _) => format!(
                 "{package}@{version} is NOT admitted yet: it runs {commands} on install and is \
                  inside the {quarantine_days}-day quarantine floor, which no approval overrides. \
-                 The rule is recorded and takes effect at {}, with no further action needed.",
+                 The rule is recorded and takes effect at {}, with no further action \
+                 needed.{pinned}",
                 clears_at.to_rfc3339()
             ),
             (None, true) => {
-                format!("{package}@{version} is now admitted while its dist.integrity is unchanged")
+                format!(
+                    "{package}@{version} is now admitted while its dist.integrity is \
+                     unchanged.{pinned}"
+                )
             }
             (None, false) => format!(
                 "{package}@{version} is now admitted, and npm will run {commands} on install, \
                  while its dist.integrity is unchanged. The daemon picks this up on its next \
-                 request."
+                 request.{pinned}"
             ),
         };
 

@@ -51,8 +51,8 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::control::client::ControlClient;
 use crate::control::protocol::{
-    AllowArgs, Answer, DenyArgs, InspectArgs, LedgerArgs, RecentBlocksArgs, Request, RulesArgs,
-    StatusArgs,
+    AllowArgs, Answer, DenyArgs, InspectArgs, LedgerArgs, PinRequest, RecentBlocksArgs, Request,
+    RulesArgs, StatusArgs,
 };
 use crate::control::{ClientError, LABEL_MCP};
 use crate::policy::Verdict;
@@ -113,6 +113,22 @@ pub struct AllowRequest {
     /// Why this approval is being granted. Recorded on the rule and in the audit log.
     #[serde(default)]
     pub reason: Option<String>,
+    /// The files you reviewed, package-relative. The daemon hashes each from the tarball it
+    /// fetches itself, so a pin always describes bytes that were really published.
+    #[serde(default)]
+    pub pins: Vec<PinInput>,
+}
+
+/// One file an approval names.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PinInput {
+    /// Package-relative path inside the tarball, e.g. `install.js`.
+    pub path: String,
+    /// The sha256 you expect this file to have, if you want it checked. A disagreement fails
+    /// the whole approval — it means the published bytes moved between inspection and
+    /// approval, which is exactly when an approval should not be recorded.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// `npmfilter_deny` arguments.
@@ -166,6 +182,10 @@ pub struct DaemonStatus {
 pub struct PolicyStatus {
     /// Versions younger than this are withheld; 0 disables the age gate.
     pub min_age_days: u32,
+    /// Days a version carrying an install hook must be published before ANY approval admits
+    /// it. The one gate an approval cannot override, so it belongs in any statement of the
+    /// policy in force.
+    pub install_script_quarantine_days: u32,
     /// Scopes exempt from the automatic gates.
     pub bypass_scopes: Vec<String>,
     /// In-memory packument TTL, in seconds.
@@ -228,6 +248,10 @@ pub struct RuleView {
     pub scripts: Vec<HookCommand>,
     /// sha256 over the sorted install-hook map.
     pub scripts_sha256: Option<String>,
+    /// The files the approval named, each with the sha256 the daemon computed from the
+    /// published tarball. `None` means the approval named no files — which is not the same
+    /// claim as "the reviewer checked and pinned nothing".
+    pub pins: Option<Vec<PinnedFile>>,
     /// Why the rule exists.
     pub reason: Option<String>,
     /// Who recorded it.
@@ -250,11 +274,29 @@ impl RuleView {
             integrity: stored.rule.integrity.clone(),
             scripts: hooks_from_json(stored.scripts_json.as_deref()),
             scripts_sha256: stored.rule.scripts_sha256.clone(),
+            pins: stored.pins.as_ref().map(|pins| {
+                pins.files()
+                    .iter()
+                    .map(|(path, sha256)| PinnedFile {
+                        path: path.clone(),
+                        sha256: sha256.clone(),
+                    })
+                    .collect()
+            }),
             reason: stored.rule.reason.clone(),
             actor: stored.rule.actor.clone(),
             created: stored.created.to_rfc3339(),
         }
     }
+}
+
+/// One file an approval pinned, with the digest the daemon computed itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PinnedFile {
+    /// Path inside the package, with the tarball's `package/` root stripped.
+    pub path: String,
+    /// sha256 of that file's bytes as published.
+    pub sha256: String,
 }
 
 /// `npmfilter_rules` result.
@@ -381,10 +423,11 @@ impl McpServer {
         }
     }
 
-    /// DESIGN.md "MCP surface" — stream the tarball, read only `package.json`, discard the bytes.
+    /// DESIGN.md "MCP surface" — stream the tarball, keep `package.json` and a digest per
+    /// entry, discard the bytes.
     #[tool(
         name = "npmfilter_inspect",
-        description = "Inspect one published version before approving it. The daemon streams the tarball from the registry, reads ONLY its package.json and discards every other byte — nothing is written to disk. Reports publish time and age, dist.integrity, the install-hook commands with their hashes, the SCRIPT DELTA against the previous published version (a version that newly acquires an install hook is the compromise shape), maintainers and _npmUser, whether a provenance attestation exists, and the file count and unpacked size."
+        description = "Inspect one published version before approving it. The daemon streams the tarball from the registry, keeping only its package.json and a sha256 per file — no package bytes are written to disk. Reports publish time and age, dist.integrity, the install-hook commands with their hashes, the SCRIPT DELTA against the previous published version (a version that newly acquires an install hook is the compromise shape), a digest for every published file, maintainers and _npmUser, whether a provenance attestation exists, and the file count and unpacked size. IMPORTANT: the script delta compares COMMAND STRINGS only — an unchanged `postinstall: node install.js` says nothing about what install.js contains. If an earlier approval for this package pinned files, pin_audit reports each one as unchanged, changed or absent here; read every changed entry before approving. Use the files list to pick paths for npmfilter_allow's pins."
     )]
     pub async fn inspect(
         &self,
@@ -403,7 +446,7 @@ impl McpServer {
     /// DESIGN.md "MCP surface" — approval pinned to the current integrity and script hashes.
     #[tool(
         name = "npmfilter_allow",
-        description = "Approve one package version. The daemon pins the rule to that version's current dist.integrity (sha512) and to the sha256 of its exact install-hook commands, so the approval lapses the moment either changes. Inspect the version first."
+        description = "Approve one package version. The daemon pins the rule to that version's current dist.integrity (sha512) and to the sha256 of its exact install-hook commands, so the approval lapses the moment either changes. Optionally pass `pins`: the files you actually reviewed, package-relative (e.g. install.js). The daemon fetches the tarball and hashes each itself — if you also state a sha256 and it disagrees, the whole approval is refused, which means the bytes moved between your inspection and your approval. Inspect the version first."
     )]
     pub async fn allow(
         &self,
@@ -413,12 +456,20 @@ impl McpServer {
             package,
             version,
             reason,
+            pins,
         } = params.0;
         match self
             .send(Request::Allow(AllowArgs {
                 package,
                 version,
                 reason,
+                pins: pins
+                    .into_iter()
+                    .map(|pin| PinRequest {
+                        path: pin.path,
+                        sha256: pin.sha256,
+                    })
+                    .collect(),
             }))
             .await?
         {

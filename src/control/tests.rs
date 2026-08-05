@@ -339,6 +339,7 @@ async fn a_validation_failure_crosses_the_socket_as_a_refusal_and_writes_nothing
             package: "../../etc/passwd".to_owned(),
             version: "1.0.0".to_owned(),
             reason: None,
+            pins: Vec::new(),
         }))
         .await
         .expect_err("a traversal-shaped name is refused");
@@ -408,6 +409,7 @@ fn an_exact_version_must_be_semver_and_a_reason_must_be_printable() {
         // A terminal escape in an operator note would be re-rendered by every tool that shows
         // the rule.
         reason: Some("fine\u{1b}[2J".to_owned()),
+        pins: Vec::new(),
     });
     assert!(matches!(
         control.validate(),
@@ -418,6 +420,7 @@ fn an_exact_version_must_be_semver_and_a_reason_must_be_printable() {
         package: "lodash".to_owned(),
         version: "4.17.21".to_owned(),
         reason: Some("x".repeat(MAX_REASON_BYTES + 1)),
+        pins: Vec::new(),
     });
     assert!(matches!(
         long.validate(),
@@ -761,4 +764,68 @@ async fn an_offline_seed_writes_the_rule_and_records_the_reduced_assurance() {
     let reason = stored.rule.reason.as_deref().unwrap_or_default();
     assert!(reason.contains("NOT VERIFIED (--offline)"), "{reason}");
     assert!(reason.contains("Reduced assurance"), "{reason}");
+}
+
+// -- pin validation -------------------------------------------------------------------------
+
+#[test]
+fn a_pin_path_that_could_never_name_a_real_entry_is_refused() {
+    for bad in [
+        "/etc/shadow",
+        "../escape.js",
+        "./install.js",
+        "a//b.js",
+        "back\\slash.js",
+        "",
+    ] {
+        let request = Request::Allow(AllowArgs {
+            package: "widget".to_owned(),
+            version: "1.0.0".to_owned(),
+            reason: None,
+            pins: vec![PinRequest {
+                path: bad.to_owned(),
+                sha256: None,
+            }],
+        });
+        assert!(
+            request.validate().is_err(),
+            "{bad:?} must be refused as a pin path"
+        );
+    }
+}
+
+#[test]
+fn an_asserted_digest_must_look_like_a_sha256() {
+    let request = Request::Allow(AllowArgs {
+        package: "widget".to_owned(),
+        version: "1.0.0".to_owned(),
+        reason: None,
+        pins: vec![PinRequest {
+            path: "install.js".to_owned(),
+            sha256: Some("NOTAHASH".to_owned()),
+        }],
+    });
+    assert!(matches!(
+        request.validate(),
+        Err(ValidationError::BadSha256 { .. })
+    ));
+}
+
+#[test]
+fn an_approval_may_not_pin_an_unbounded_number_of_files() {
+    let request = Request::Allow(AllowArgs {
+        package: "widget".to_owned(),
+        version: "1.0.0".to_owned(),
+        reason: None,
+        pins: (0..crate::control::protocol::MAX_PINS + 1)
+            .map(|i| PinRequest {
+                path: format!("file{i}.js"),
+                sha256: None,
+            })
+            .collect(),
+    });
+    assert!(matches!(
+        request.validate(),
+        Err(ValidationError::TooManyPins { .. })
+    ));
 }

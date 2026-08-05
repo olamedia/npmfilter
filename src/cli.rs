@@ -17,7 +17,7 @@ use crate::config::Config;
 use crate::control::LABEL_CLI;
 use crate::control::client::{ControlClient, send_blocking};
 use crate::control::protocol::{
-    AllowArgs, Answer, DenyArgs, InspectArgs, Request, RulesArgs, StatusArgs,
+    AllowArgs, Answer, DenyArgs, InspectArgs, PinRequest, Request, RulesArgs, StatusArgs,
 };
 use crate::mcp::inspect::InspectReport;
 use crate::mcp::{RuleView, RuleWritten, RulesReport, StatusReport};
@@ -64,6 +64,11 @@ pub enum Command {
         /// Why this approval was granted.
         #[arg(short, long)]
         reason: Option<String>,
+        /// A file inside the published tarball this approval is pinned to, package-relative
+        /// (e.g. `install.js`). Repeatable. The daemon fetches the tarball and hashes each
+        /// one itself, so a pin always describes bytes that were really published.
+        #[arg(long = "pin")]
+        pin: Vec<String>,
     },
 
     /// Block a package version outright.
@@ -157,11 +162,19 @@ pub fn run(command: &Command, config: Config) -> anyhow::Result<()> {
             package,
             version,
             reason,
+            pin,
         } => {
             let request = Request::Allow(AllowArgs {
                 package: package.clone(),
                 version: version.clone(),
                 reason: reason.clone(),
+                pins: pin
+                    .iter()
+                    .map(|path| PinRequest {
+                        path: path.clone(),
+                        sha256: None,
+                    })
+                    .collect(),
             });
             let written = match ask(&config, request)? {
                 Answer::Rule(written) => *written,
@@ -227,8 +240,10 @@ pub fn render_status(report: &StatusReport) -> String {
     ));
     out.push_str(&format!("upstream    {}\n", report.daemon.upstream));
     out.push_str(&format!(
-        "policy      min_age_days={} packument_ttl_secs={} bypass_scopes={}\n",
+        "policy      min_age_days={} install_script_quarantine_days={} packument_ttl_secs={} \
+         bypass_scopes={}\n",
         report.policy.min_age_days,
+        report.policy.install_script_quarantine_days,
         report.policy.packument_ttl_secs,
         if report.policy.bypass_scopes.is_empty() {
             "(none)".to_owned()
@@ -273,6 +288,12 @@ fn render_rule(rule: &RuleView) -> String {
     }
     if let Some(scripts) = &rule.scripts_sha256 {
         out.push_str(&format!("    scripts sha256  {scripts}\n"));
+    }
+    for pin in rule.pins.iter().flatten() {
+        out.push_str(&format!(
+            "    pinned file     {} {}\n",
+            pin.sha256, pin.path
+        ));
     }
     if let Some(reason) = &rule.reason {
         out.push_str(&format!("    reason          {reason}\n"));
@@ -349,6 +370,26 @@ pub fn render_inspect(report: &InspectReport) -> String {
     }
     out.push_str(&format!("  {}\n", report.script_delta.summary));
 
+    if let Some(audit) = &report.pin_audit {
+        out.push_str(&format!(
+            "\npinned files versus the approval on {}\n",
+            audit.pinned_version
+        ));
+        for change in &audit.changed {
+            out.push_str(&format!(
+                "  CHANGED  {}\n           pinned   {}\n           observed {}\n",
+                change.path, change.pinned_sha256, change.observed_sha256
+            ));
+        }
+        for path in &audit.missing {
+            out.push_str(&format!("  MISSING  {path}\n"));
+        }
+        for path in &audit.unchanged {
+            out.push_str(&format!("  same     {path}\n"));
+        }
+        out.push_str(&format!("  {}\n", audit.summary));
+    }
+
     out.push_str("\npublisher\n");
     out.push_str(&format!(
         "  _npmUser        {}\n",
@@ -382,6 +423,26 @@ pub fn render_inspect(report: &InspectReport) -> String {
         "  compressed      {} bytes streamed and discarded\n",
         report.compressed_bytes
     ));
+
+    if !report.files.is_empty() {
+        out.push_str(&format!(
+            "\nfile manifest — sha256 of every published file, for `--pin`\n  {} file(s){}\n",
+            report.file_count.observed,
+            if report.files_truncated {
+                format!(", showing the first {}", report.files.len())
+            } else {
+                String::new()
+            }
+        ));
+        for file in &report.files {
+            out.push_str(&format!(
+                "  {}  {:>10}  {}\n",
+                &file.sha256[..16],
+                file.size,
+                file.path
+            ));
+        }
+    }
 
     if !report.notes.is_empty() {
         out.push_str("\nnotes\n");
@@ -477,6 +538,7 @@ mod tests {
             },
             policy: crate::mcp::PolicyStatus {
                 min_age_days: 30,
+                install_script_quarantine_days: 7,
                 bypass_scopes: vec!["@olamedia".to_owned()],
                 packument_ttl_secs: 60,
             },
