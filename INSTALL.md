@@ -16,8 +16,8 @@ inspect and approve packages for you.
 ## 1. Install the package
 
 ```sh
-sudo dpkg -i npmfilter_0.5.3_amd64.deb          # Debian, Ubuntu
-sudo rpm -i npmfilter-0.5.3-1.x86_64.rpm        # Fedora, RHEL, openSUSE
+sudo dpkg -i npmfilter_0.5.4_amd64.deb          # Debian, Ubuntu
+sudo rpm -i npmfilter-0.5.4-1.x86_64.rpm        # Fedora, RHEL, openSUSE
 ```
 
 You get:
@@ -37,9 +37,9 @@ because you decided it should, not because a package manager unpacked a file.
 To build the packages yourself:
 
 ```sh
-cargo deb                                        # -> target/debian/npmfilter_0.5.3_amd64.deb
-cargo generate-rpm                               # -> target/generate-rpm/npmfilter-0.5.3-1.x86_64.rpm
-dpkg -c target/debian/npmfilter_0.5.3_amd64.deb  # inspect before installing
+cargo deb                                        # -> target/debian/npmfilter_0.5.4_amd64.deb
+cargo generate-rpm                               # -> target/generate-rpm/npmfilter-0.5.4-1.x86_64.rpm
+dpkg -c target/debian/npmfilter_0.5.4_amd64.deb  # inspect before installing
 ```
 
 `cargo deb` and `cargo generate-rpm` come from `cargo install cargo-deb
