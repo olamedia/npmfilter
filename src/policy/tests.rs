@@ -10,6 +10,8 @@ const NOW: &str = "2026-08-04T12:00:00Z";
 const OLD: &str = "2020-01-01T00:00:00Z";
 /// Three days before `NOW` — inside the default 30-day window.
 const RECENT: &str = "2026-08-01T12:00:00Z";
+/// Fifteen days before `NOW`: past the 7-day quarantine floor, inside the 30-day window.
+const PAST_FLOOR: &str = "2026-07-20T12:00:00Z";
 
 fn ts(raw: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(raw)
@@ -162,6 +164,11 @@ impl Harness {
 
     fn with_min_age_days(mut self, days: u32) -> Self {
         self.config.min_age_days = days;
+        self
+    }
+
+    fn with_quarantine_days(mut self, days: u32) -> Self {
+        self.config.install_script_quarantine_days = days;
         self
     }
 
@@ -371,7 +378,10 @@ fn zero_min_age_days_disables_the_age_gate_entirely() {
             &[("postinstall", "node build.js")],
         )
         .build();
-    let outcome = Harness::new().with_min_age_days(0).run(&packument);
+    let outcome = Harness::new()
+        .with_min_age_days(0)
+        .with_quarantine_days(0)
+        .run(&packument);
 
     assert_eq!(
         served(&outcome),
@@ -512,7 +522,7 @@ fn allow_rule_with_matching_integrity_bypasses_age_and_script_gates() {
     let packument = Fixture::new("esbuild")
         .version(
             "0.25.0",
-            Some(RECENT),
+            Some(PAST_FLOOR),
             Some("sha512-approved"),
             &[("postinstall", "node install.js")],
         )
@@ -1456,4 +1466,127 @@ fn version_integrity_helper_reads_dist_integrity() {
     );
     assert_eq!(version_integrity(&json!({ "dist": {} })), None);
     assert_eq!(version_integrity(&json!({})), None);
+}
+
+// -- install-script quarantine floor -------------------------------------------------------
+//
+// The one gate below the ledger that an approval cannot override. Everything else here is a
+// default an operator may overrule after review; this is a floor, because review is made under
+// time pressure and the allow gate runs above the age gate.
+
+const HOOK: &[(&str, &str)] = &[("preinstall", "node setup.mjs")];
+
+/// `RECENT` is three days before `NOW` — inside a 7-day floor.
+#[test]
+fn an_approval_does_not_override_the_quarantine_floor() {
+    let packument = Fixture::new("fresh")
+        .version("1.0.0", Some(RECENT), Some("sha512-a"), HOOK)
+        .build();
+    let outcome = Harness::new()
+        .with_rule(Rule::allow("fresh", "1.0.0", "sha512-a"))
+        .run(&packument);
+
+    assert_eq!(
+        block_for(&outcome, "1.0.0").reason,
+        BlockReason::InstallScriptQuarantine,
+        "an allow rule must not admit a hook-carrying version inside the floor"
+    );
+}
+
+/// The approval is deferred, not discarded: once the floor clears it admits the version, so a
+/// reviewer reviews once rather than being told to come back later.
+#[test]
+fn the_same_approval_admits_the_version_once_the_floor_clears() {
+    let packument = Fixture::new("fresh")
+        .version("1.0.0", Some(OLD), Some("sha512-a"), HOOK)
+        .build();
+    let outcome = Harness::new()
+        .with_rule(Rule::allow("fresh", "1.0.0", "sha512-a"))
+        .run(&packument);
+
+    assert!(served(&outcome).contains(&"1.0.0".to_owned()));
+}
+
+/// A hook-free version runs nothing at install time, so the floor does not apply to it — an
+/// approval still admits it early.
+#[test]
+fn the_floor_does_not_apply_to_a_hook_free_version() {
+    let packument = Fixture::new("clean")
+        .version("1.0.0", Some(RECENT), Some("sha512-a"), &[])
+        .build();
+    let outcome = Harness::new()
+        .with_rule(Rule::allow("clean", "1.0.0", "sha512-a"))
+        .run(&packument);
+
+    assert!(served(&outcome).contains(&"1.0.0".to_owned()));
+}
+
+/// A deny rule still wins: the floor is inserted below deny, not above it.
+#[test]
+fn a_deny_rule_still_outranks_the_quarantine_floor() {
+    let packument = Fixture::new("fresh")
+        .version("1.0.0", Some(RECENT), Some("sha512-a"), HOOK)
+        .build();
+    let outcome = Harness::new()
+        .with_rule(Rule::deny("fresh", "1.0.0"))
+        .run(&packument);
+
+    assert_eq!(block_for(&outcome, "1.0.0").reason, BlockReason::DenyRule);
+}
+
+/// Fail closed: a version whose publish time cannot be read cannot be shown to be past the
+/// floor, and an approval must not paper over that.
+#[test]
+fn an_unreadable_publish_time_does_not_clear_the_floor() {
+    let packument = Fixture::new("fresh")
+        .version("1.0.0", Some("not a timestamp"), Some("sha512-a"), HOOK)
+        .build();
+    let outcome = Harness::new()
+        .with_rule(Rule::allow("fresh", "1.0.0", "sha512-a"))
+        .run(&packument);
+
+    assert_eq!(
+        block_for(&outcome, "1.0.0").reason,
+        BlockReason::InstallScriptQuarantine
+    );
+}
+
+/// First-party scopes skip it, consistent with `bypass_scopes` everywhere else.
+#[test]
+fn a_bypassed_scope_skips_the_quarantine_floor() {
+    let packument = Fixture::new("@olamedia/core")
+        .version("1.0.0", Some(RECENT), Some("sha512-a"), HOOK)
+        .build();
+    let outcome = Harness::new().with_bypass(&["@olamedia"]).run(&packument);
+
+    assert!(served(&outcome).contains(&"1.0.0".to_owned()));
+}
+
+/// Zero disables it, and then an approval admits a fresh hook-carrying version again.
+#[test]
+fn zero_disables_the_quarantine_floor() {
+    let packument = Fixture::new("fresh")
+        .version("1.0.0", Some(RECENT), Some("sha512-a"), HOOK)
+        .build();
+    let outcome = Harness::new()
+        .with_quarantine_days(0)
+        .with_rule(Rule::allow("fresh", "1.0.0", "sha512-a"))
+        .run(&packument);
+
+    assert!(served(&outcome).contains(&"1.0.0".to_owned()));
+}
+
+/// Without an approval the floor is reported ahead of the ordinary age gate, so the message
+/// names the gate that actually cannot be overridden.
+#[test]
+fn the_floor_is_reported_ahead_of_the_ordinary_age_gate() {
+    let packument = Fixture::new("fresh")
+        .version("1.0.0", Some(RECENT), Some("sha512-a"), HOOK)
+        .build();
+    let outcome = Harness::new().run(&packument);
+
+    assert_eq!(
+        block_for(&outcome, "1.0.0").reason,
+        BlockReason::InstallScriptQuarantine
+    );
 }

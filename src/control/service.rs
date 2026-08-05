@@ -349,18 +349,36 @@ impl ControlService {
             .with_store(move |store| store.record_rule_audited(&rule, now))
             .await?;
 
-        let effect = if hooks.is_empty() {
-            format!("{package}@{version} is now admitted while its dist.integrity is unchanged")
-        } else {
-            format!(
-                "{package}@{version} is now admitted, and npm will run {} on install, while its \
-                 dist.integrity is unchanged. The daemon picks this up on its next request.",
-                hooks
-                    .iter()
-                    .map(|hook| format!("{}: {}", hook.hook, hook.command))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )
+        // What this approval actually does right now. Reporting "is now admitted" for a
+        // version the quarantine floor still withholds would be a claim the daemon knows to
+        // be false, and the operator would only discover it when the install failed anyway.
+        let commands = hooks
+            .iter()
+            .map(|hook| format!("{}: {}", hook.hook, hook.command))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let quarantine_days = self.config.install_script_quarantine_days;
+        let published = crate::policy::published_at(&packument, version);
+        let clears_at = (!hooks.is_empty() && quarantine_days > 0)
+            .then(|| published.map(|at| at + chrono::Duration::days(i64::from(quarantine_days))))
+            .flatten()
+            .filter(|clears_at| *clears_at > now);
+
+        let effect = match (&clears_at, hooks.is_empty()) {
+            (Some(clears_at), _) => format!(
+                "{package}@{version} is NOT admitted yet: it runs {commands} on install and is \
+                 inside the {quarantine_days}-day quarantine floor, which no approval overrides. \
+                 The rule is recorded and takes effect at {}, with no further action needed.",
+                clears_at.to_rfc3339()
+            ),
+            (None, true) => {
+                format!("{package}@{version} is now admitted while its dist.integrity is unchanged")
+            }
+            (None, false) => format!(
+                "{package}@{version} is now admitted, and npm will run {commands} on install, \
+                 while its dist.integrity is unchanged. The daemon picks this up on its next \
+                 request."
+            ),
         };
 
         Ok(RuleWritten {

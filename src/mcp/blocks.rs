@@ -139,6 +139,14 @@ pub fn parse_hooks(detail: &str) -> Vec<HookCommand> {
 /// What the caller should do about a block.
 fn next_step(reason: Option<BlockReason>, package: &str, version: &str) -> String {
     match reason {
+        Some(BlockReason::InstallScriptQuarantine) => format!(
+            "{package}@{version} runs an install hook and is inside the quarantine floor. \
+             NO approval overrides it — that is the point: a malicious release is normally \
+             pulled within a day or two, and reviewing it early cannot shorten that. Run \
+             npmfilter_inspect({package}, {version}) and npmfilter_allow now if it is \
+             legitimate — the rule is recorded and takes effect when the window clears — or \
+             install a version already past it"
+        ),
         Some(BlockReason::InstallScript) => format!(
             "run npmfilter_inspect({package}, {version}) — read the script delta against the \
              previous published version — then npmfilter_allow({package}, {version}, reason) if \

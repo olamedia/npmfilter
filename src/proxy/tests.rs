@@ -262,6 +262,7 @@ fn the_summary_lists_what_was_withheld_and_why() {
         min_age_days: 30,
         bypass_scopes: vec!["@olamedia".to_owned()],
         allow_dist_tag_downgrade: false,
+        install_script_quarantine_days: 7,
     };
     let document = with_summary(full_packument(), &blocked, &config, generated);
     let summary = &document[SUMMARY_KEY];

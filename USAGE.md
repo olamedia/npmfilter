@@ -34,6 +34,7 @@ them mean stop.**
 | Wire reason | Meaning | What to do |
 |---|---|---|
 | `too_new` | Published less than `min_age_days` ago (default 30). The quarantine window. | **Routine.** Wait, pin an older version, or approve deliberately if you have a reason to trust it now. |
+| `install_script_quarantine` | Carries an install hook and is younger than the quarantine floor (default 7 days). | **Approval does not override this.** Approve anyway if you have reviewed it — the rule is recorded and activates when the window clears — or install a version already past it. |
 | `install_script` | Carries `preinstall`, `install` or `postinstall`, or upstream flags `hasInstallScript`. | **Routine but read it.** `inspect` first — check the *script delta*. A build tool that always had a hook is ordinary; one that just grew one is not. |
 | `no_integrity` | Publishes neither `dist.integrity` nor `dist.shasum`. | **Routine, rare.** Nothing can pin it, so the ledger could never detect a replacement. Approve only if you accept that. |
 | `deny_rule` | You (or someone in group `npmfilter`) denied it. | Expected. `npmfilter rules -p <pkg>` shows who and why. |
@@ -157,6 +158,7 @@ you trusting a policy that is not being enforced.
 | `state_path` | `/var/lib/npmfilter/rules.db` | Rules, ledger, audit log. `0600` in a `0700` directory. |
 | `socket_path` | `/run/npmfilter/npmfilter.sock` | Control socket, `0660` `npmfilter:npmfilter`. |
 | `allow_publish_passthrough` | `false` | `true` relays mutating methods and audits every one. |
+| `install_script_quarantine_days` | `7` | Days a hook-carrying version must be public before **any** approval admits it. The one gate an approval cannot override. `0` disables it. |
 | `allow_dist_tag_downgrade` | `false` | `true` moves a tag whose target was withheld onto an older release. Leave it off: that is a **silent downgrade**, and older releases are the ones with known vulnerabilities. |
 
 `sudo systemctl restart npmfilter` after editing.

@@ -30,6 +30,7 @@ Each version is evaluated in this order:
 |---|---|---|
 | 0 | **Integrity ledger.** `(name, version)` was seen before with a different identity — `dist.integrity`, or `dist.shasum` for versions published before npm 5 | **block** — `integrity_changed`, critical. Nothing below can override it |
 | 1 | Explicit **deny** rule | block — `deny_rule` |
+| 2 | Carries an install hook and is younger than `install_script_quarantine_days` (default 7) | **block — `install_script_quarantine`, and no approval overrides it.** The allow gate runs above the age gate, so without this floor surviving one review turns a version published minutes ago into immediate execution. An approval made inside the window is still recorded and takes effect when it clears |
 | 2 | **Allow** rule whose pinned sha512 equals this version's `dist.integrity` **and** whose approved commands still hash the same | allow, skipping the gates below (hash differs → block `integrity_changed`, critical; commands differ → block `scripts_changed`, critical) |
 | 3 | Package scope is in `bypass_scopes` | allow |
 | 4 | The version publishes **no** content hash at all — neither `dist.integrity` nor `dist.shasum` | block — `no_integrity`. Nothing pins it, so the ledger could never report a replacement of it |
@@ -300,6 +301,7 @@ state_path = "/var/lib/npmfilter/rules.db"
 socket_path = "/run/npmfilter/npmfilter.sock"
 allow_publish_passthrough = false # true relays mutating methods, auditing each
 allow_dist_tag_downgrade  = false # true lets a withheld tag move to an older release
+install_script_quarantine_days = 7 # no approval admits a hook-carrying version younger than this
 ```
 
 An **unknown key is a hard error** and the daemon refuses to start: a typo'd

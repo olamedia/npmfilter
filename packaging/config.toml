@@ -95,3 +95,26 @@ allow_publish_passthrough = false
 # ones carrying known vulnerabilities: a security gate that silently downgrades you
 # is doing harm, not preventing it.
 allow_dist_tag_downgrade = false
+
+# Days a version carrying an install hook must have been published before ANY approval
+# can admit it. 0 disables the floor.
+#
+# This is the only gate below the integrity ledger that an approval cannot override, and
+# it is the one that makes approving safe at all. Every other automatic gate is a default
+# an operator may overrule after review; the allow gate runs above the age gate, so
+# without a floor an attacker who survives a single review turns a version published
+# minutes ago into immediate execution. Review is the weakest link in the chain: a
+# judgement made under time pressure by someone who wants their install to proceed.
+#
+# Seven days is chosen against how these attacks actually end: a malicious release is
+# normally found and pulled within a day or two — the Shai-Hulud packages went in about
+# a day — while a month would make a genuinely urgent native-package fix unreachable.
+#
+# An approval granted inside the window is NOT rejected. The rule is recorded and takes
+# effect the moment the window clears, so a package is reviewed once, while the context
+# is fresh. Versions with no install hook are unaffected: they run nothing at install
+# time. First-party `bypass_scopes` skip it.
+#
+# The escape hatch is deliberately out-of-band and visible rather than a config toggle:
+#     npm install --registry https://registry.npmjs.org
+install_script_quarantine_days = 7

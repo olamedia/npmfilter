@@ -70,6 +70,21 @@ pub struct PolicyConfig {
     /// live: `sqlite3` had 102 of 104 versions withheld, `latest` was moved from 6.0.1 to
     /// 2.1.3 (2014), and the install died in `node-gyp` with nothing naming npmfilter.
     pub allow_dist_tag_downgrade: bool,
+    /// How many days a version carrying an install hook must have been published before
+    /// ANY approval can admit it. `0` disables the floor.
+    ///
+    /// This is the one gate below the ledger that an allow rule cannot override, and it
+    /// exists because approval is the weakest link: a judgement made under time pressure
+    /// by someone who wants their install to proceed. Without a floor an attacker who
+    /// survives one review converts it straight into execution, because the allow gate
+    /// runs above the age gate and bypasses it. With a floor, a version published today
+    /// cannot run today whatever anyone approves — long enough for the ecosystem to
+    /// notice and pull it. The Shai-Hulud packages were pulled within about a day.
+    ///
+    /// An approval granted inside the window is not rejected: the rule is recorded and
+    /// takes effect when the window clears, so the review happens once, while the
+    /// context is fresh.
+    pub install_script_quarantine_days: u32,
 }
 
 impl Default for PolicyConfig {
@@ -78,6 +93,7 @@ impl Default for PolicyConfig {
             min_age_days: crate::config::DEFAULT_MIN_AGE_DAYS,
             bypass_scopes: Vec::new(),
             allow_dist_tag_downgrade: false,
+            install_script_quarantine_days: crate::config::DEFAULT_INSTALL_SCRIPT_QUARANTINE_DAYS,
         }
     }
 }
@@ -104,6 +120,9 @@ pub enum BlockReason {
     /// The version publishes neither `dist.integrity` nor `dist.shasum`, so there is nothing
     /// for the integrity ledger to pin and nothing an approval could be bound to.
     NoIntegrity,
+    /// The version carries an install hook and is younger than the quarantine floor.
+    /// Unlike every other gate below the ledger, **no approval overrides this one**.
+    InstallScriptQuarantine,
 }
 
 impl BlockReason {
@@ -116,6 +135,7 @@ impl BlockReason {
             BlockReason::InstallScript => "install_script",
             BlockReason::ScriptsChanged => "scripts_changed",
             BlockReason::NoIntegrity => "no_integrity",
+            BlockReason::InstallScriptQuarantine => "install_script_quarantine",
         }
     }
 
@@ -151,6 +171,14 @@ impl BlockReason {
                  dist.shasum — so npmfilter cannot pin it, the integrity ledger cannot tell \
                  whether its bytes were replaced, and npm has nothing to verify a download \
                  against. Run `npmfilter inspect <package> <version>`"
+            }
+            BlockReason::InstallScriptQuarantine => {
+                "this version runs an install hook and was published too recently. No \
+                 approval overrides this window: a malicious release is normally found \
+                 and pulled within a day or two, and reviewing it early cannot shorten \
+                 that. Approve it now if you have reviewed it — the rule is recorded and \
+                 takes effect when the window clears — or install a version already past \
+                 it"
             }
         }
     }
@@ -465,19 +493,78 @@ fn evaluate_version(
         };
     }
 
-    if let Some(rule) = rules.lookup(name, version) {
+    let rule = rules.lookup(name, version);
+
+    // 1. Explicit deny outranks everything below, the quarantine floor included: an
+    // operator who has said no should be told that, not told to wait.
+    if let Some(rule) = &rule
+        && rule.verdict == Verdict::Deny
+    {
+        let detail = match rule.reason.as_deref() {
+            Some(reason) => format!("denied by rule: {reason}"),
+            None => "denied by rule".to_owned(),
+        };
+        return Decision::Block {
+            reason: BlockReason::DenyRule,
+            detail,
+        };
+    }
+
+    // 2. Install-script quarantine. The ONE gate below the ledger that an allow rule cannot
+    // override, so it is evaluated before the rules are even consulted.
+    //
+    // Every other automatic gate is a default an operator may overrule after review. This one
+    // is not, because review is the weakest link in the chain: it is a judgement made under
+    // time pressure by someone who wants their install to proceed, and the allow gate runs
+    // above the age gate — so without this, surviving a single review turns a version
+    // published minutes ago into immediate execution. A floor means a malicious release
+    // cannot run on the day it appears whatever anyone approves, which is the window that
+    // matters: Shai-Hulud's packages were pulled within about a day.
+    //
+    // Deliberately scoped to versions that carry an install hook. A hook-free version runs
+    // nothing at install time, and gating those too would block urgent upgrades for no gain
+    // against this attack.
+    //
+    // First-party scopes skip it, consistent with `bypass_scopes` everywhere else: those are
+    // packages the operator publishes and already vouches for.
+    if config.install_script_quarantine_days > 0
+        && runs_install_script(meta)
+        && !is_bypassed_scope(name, config)
+    {
+        let floor_secs = i64::from(config.install_script_quarantine_days) * SECONDS_PER_DAY;
+        // Fail closed: a version whose publish time cannot be read cannot be shown to be past
+        // the floor, and this gate exists precisely for the case where being wrong is costly.
+        let age_secs = published
+            .and_then(parse_timestamp)
+            .map(|at| now.signed_duration_since(at).num_seconds());
+        let clears = age_secs.is_some_and(|age| age >= floor_secs);
+        if !clears {
+            let detail = match age_secs {
+                Some(age) => format!(
+                    "runs an install hook and is {} old, under the {}-day quarantine floor that \
+                     no approval overrides ({})",
+                    describe_age(age),
+                    config.install_script_quarantine_days,
+                    describe_hooks(meta)
+                ),
+                None => format!(
+                    "runs an install hook and has no usable publish time, so it cannot be shown \
+                     to be past the {}-day quarantine floor that no approval overrides ({})",
+                    config.install_script_quarantine_days,
+                    describe_hooks(meta)
+                ),
+            };
+            return Decision::Block {
+                reason: BlockReason::InstallScriptQuarantine,
+                detail,
+            };
+        }
+    }
+
+    if let Some(rule) = rule {
         match rule.verdict {
-            // 1. Explicit deny.
-            Verdict::Deny => {
-                let detail = match rule.reason {
-                    Some(reason) => format!("denied by rule: {reason}"),
-                    None => "denied by rule".to_owned(),
-                };
-                return Decision::Block {
-                    reason: BlockReason::DenyRule,
-                    detail,
-                };
-            }
+            // Handled above, before the quarantine floor.
+            Verdict::Deny => unreachable!("deny is decided before the quarantine floor"),
             // 2. Allow, only while the pinned hash **and** the approved commands still match.
             Verdict::Allow => {
                 if rule.integrity.as_deref() != integrity {
@@ -666,6 +753,25 @@ pub fn version_identity(meta: &Value) -> Option<String> {
 ///
 /// A hook present with a non-string value is reported as its JSON text: presence is what the
 /// gate cares about, so anything but `null`/absent counts.
+/// Whether this version runs an install hook — the `scripts` map or upstream's own flag.
+///
+/// Both sources, because a mirror may serve `hasInstallScript` without a `scripts` map and a
+/// version must not clear a gate on the grounds that it has no hook and then be handed to npm
+/// labelled as having one.
+fn runs_install_script(meta: &Value) -> bool {
+    !install_hooks(meta).is_empty() || flags_install_script(meta)
+}
+
+/// Whether this package's scope is exempt from the automatic gates.
+fn is_bypassed_scope(name: &str, config: &PolicyConfig) -> bool {
+    package_scope(name).is_some_and(|scope| {
+        config
+            .bypass_scopes
+            .iter()
+            .any(|allowed| allowed.trim_start_matches('@') == scope)
+    })
+}
+
 pub fn install_hooks(meta: &Value) -> Vec<(&'static str, String)> {
     let Some(scripts) = meta.get("scripts").and_then(Value::as_object) else {
         return Vec::new();
@@ -736,6 +842,19 @@ pub fn package_scope(name: &str) -> Option<&str> {
 }
 
 /// Parse an npm `time` value (RFC 3339, e.g. `2011-12-16T00:00:00.000Z`).
+/// The publish time a packument records for one version, parsed.
+///
+/// `None` when the packument has no `time` entry for it or the entry is not a valid RFC 3339
+/// timestamp — the two cases every age gate here treats as "cannot be shown to be old enough".
+pub fn published_at(packument: &Value, version: &str) -> Option<DateTime<Utc>> {
+    packument
+        .get("time")
+        .and_then(Value::as_object)
+        .and_then(|time| time.get(version))
+        .and_then(Value::as_str)
+        .and_then(parse_timestamp)
+}
+
 fn parse_timestamp(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()

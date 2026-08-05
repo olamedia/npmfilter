@@ -40,6 +40,13 @@ pub const DEFAULT_ALLOW_PUBLISH_PASSTHROUGH: bool = false;
 /// carrying known vulnerabilities, and the client is given no sign anything happened.
 pub const DEFAULT_ALLOW_DIST_TAG_DOWNGRADE: bool = false;
 
+/// Default for [`Config::install_script_quarantine_days`].
+///
+/// Seven days: long enough that a malicious release is normally found and pulled first
+/// (Shai-Hulud's packages went within about a day), short enough that a genuinely urgent
+/// native-package fix is not unreachable for a month.
+pub const DEFAULT_INSTALL_SCRIPT_QUARANTINE_DAYS: u32 = 7;
+
 /// Anything that can go wrong loading the config.
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -110,6 +117,15 @@ pub struct Config {
     /// review it; it is never quietly handed an older release instead. Set this to `true` only
     /// if you have decided you want that downgrade, deliberately and per machine.
     pub allow_dist_tag_downgrade: bool,
+    /// Days a version carrying an install hook must have been published before ANY
+    /// approval can admit it. `0` disables the floor.
+    ///
+    /// Every other automatic gate is a default an operator may overrule after review.
+    /// This one is not: the allow gate runs above the age gate, so without a floor,
+    /// surviving one review turns a version published minutes ago into immediate
+    /// execution. An approval made inside the window is still recorded — it simply takes
+    /// effect when the window clears.
+    pub install_script_quarantine_days: u32,
 }
 
 impl Default for Config {
@@ -126,6 +142,7 @@ impl Default for Config {
             socket_path: PathBuf::from(DEFAULT_SOCKET_PATH),
             allow_publish_passthrough: DEFAULT_ALLOW_PUBLISH_PASSTHROUGH,
             allow_dist_tag_downgrade: DEFAULT_ALLOW_DIST_TAG_DOWNGRADE,
+            install_script_quarantine_days: DEFAULT_INSTALL_SCRIPT_QUARANTINE_DAYS,
         }
     }
 }
@@ -173,6 +190,7 @@ impl Config {
             min_age_days: self.min_age_days,
             bypass_scopes: self.bypass_scopes.clone(),
             allow_dist_tag_downgrade: self.allow_dist_tag_downgrade,
+            install_script_quarantine_days: self.install_script_quarantine_days,
         }
     }
 
