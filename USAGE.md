@@ -1,8 +1,11 @@
 # npmfilter — operator manual
 
-Reference and playbooks. [README.md](README.md) is the narrative introduction —
-what npmfilter is, how to install and adopt it. [SECURITY.md](SECURITY.md) is the
-threat model.
+Reference and playbooks: what each block reason means, every command, every
+config key, and how to read the audit log.
+
+The other three: [README.md](README.md) is what npmfilter is and how it decides.
+[INSTALL.md](INSTALL.md) sets it up. [SECURITY.md](SECURITY.md) is the threat
+model.
 
 ---
 

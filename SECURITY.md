@@ -6,7 +6,10 @@ someone deciding whether to put it in front of every `npm install` on a machine.
 npmfilter is a local npm registry proxy that gates **resolution**. It fetches the full
 packument upstream, withholds versions that are too new or that run install hooks, and
 re-serializes what is left. Approvals are pinned to `dist.integrity` plus a hash of the exact
-install-hook commands, and they are recorded only by the daemon.
+install-hook commands — and, when the reviewer names files, to a sha256 of each of those files
+as published. Approvals are recorded only by the daemon.
+
+Setup is in [INSTALL.md](INSTALL.md); the operator reference is in [USAGE.md](USAGE.md).
 
 ---
 
