@@ -107,6 +107,12 @@ tighten_state_directory() {
 
     chown -h "$NPMFILTER_USER:$NPMFILTER_GROUP" "$NPMFILTER_HOME" 2>/dev/null || true
     chmod 0700 "$NPMFILTER_HOME" 2>/dev/null || true
+    # Drop the special bits explicitly. A numeric chmod is supposed to clear them, but a
+    # directory created inside a setgid parent has been observed keeping the inherited bit
+    # through `chmod 0700` on some filesystems. It matters: setgid on the state directory
+    # makes every file created inside it inherit that group rather than the daemon's own,
+    # which is the opposite of what this whole block is for.
+    chmod ug-s,o-t "$NPMFILTER_HOME" 2>/dev/null || true
 
     for npmfilter_state in "$NPMFILTER_HOME"/rules.db "$NPMFILTER_HOME"/rules.db-wal \
                            "$NPMFILTER_HOME"/rules.db-shm; do

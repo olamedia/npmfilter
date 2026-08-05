@@ -1,6 +1,6 @@
 [package]
 name = "npmfilter"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Local npm registry filtering daemon: release-age and install-script gates with content-pinned manual approval"
 readme = "README.md"
