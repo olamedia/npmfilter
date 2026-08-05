@@ -12,7 +12,7 @@ axum = "0.8"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4.6.5", features = ["derive"] }
 flate2 = "1.1"
-reqwest = { version = "0.12", features = ["json", "stream", "gzip"] }
+reqwest = { version = "0.13", features = ["json", "stream", "gzip"] }
 rmcp = { version = "3.1.0", default-features = false, features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 schemars = "1.2"
