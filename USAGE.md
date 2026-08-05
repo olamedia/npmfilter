@@ -32,6 +32,34 @@ moment and reports the next step per block.
 Then read the reason off the table below. **Three of the six are routine. Two of
 them mean stop.**
 
+### The order of checks
+
+Every version of a package is put through these in order. The first one that
+answers decides it, and a refusal means the version is not in the document your
+package manager resolves against at all — there is no warning to skim past.
+
+| # | Check | If it matches |
+|---|---|---|
+| 0 | This exact version was served before with different content (`dist.integrity`, or `dist.shasum` before npm 5) | **Refused — `integrity_changed`, critical. Nothing below overrides it, including your own approval** |
+| 1 | You denied it | Refused — `deny_rule` |
+| 2 | It runs an install hook and is younger than `install_script_quarantine_days` (default 7) | **Refused — `install_script_quarantine`. No approval overrides this either.** An approval made inside the window is recorded and takes effect when the window clears |
+| 3 | You approved it, its `dist.integrity` still matches, and its install commands still hash the same | Served, skipping everything below. If the hash moved → `integrity_changed`; if the commands moved → `scripts_changed`; both critical |
+| 4 | Its scope is in `bypass_scopes` | Served |
+| 5 | It publishes no checksum at all | Refused — `no_integrity`. Nothing could pin it, so a later replacement could never be detected |
+| 6 | It is younger than `min_age_days` (default 30) | Refused — `too_new` |
+| 7 | It carries `preinstall`, `install` or `postinstall`, or upstream flags `hasInstallScript` | Refused — `install_script`, naming the commands |
+| 8 | Anything else | Served |
+
+Every version npmfilter sees is written down, refused ones included. So by the
+time one is old enough to install, the daemon already knows whether its content
+sat still for those 30 days or was changed underneath.
+
+**`latest` is never repointed.** When the version a tag names is being held, the
+tag keeps naming it and asking for it fails. Moving the tag onto an older
+surviving release would hand you a version with known problems in it without
+saying so. `allow_dist_tag_downgrade = true` turns that behaviour on if you want
+it.
+
 ### Block reasons
 
 | Wire reason | Meaning | What to do |
