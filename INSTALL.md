@@ -16,8 +16,8 @@ inspect and approve packages for you.
 ## 1. Install the package
 
 ```sh
-sudo dpkg -i npmfilter_0.5.4_amd64.deb          # Debian, Ubuntu
-sudo rpm -i npmfilter-0.5.4-1.x86_64.rpm        # Fedora, RHEL, openSUSE
+sudo dpkg -i npmfilter_0.5.5_amd64.deb          # Debian, Ubuntu
+sudo rpm -i npmfilter-0.5.5-1.x86_64.rpm        # Fedora, RHEL, openSUSE
 ```
 
 You get:
@@ -37,9 +37,9 @@ because you decided it should, not because a package manager unpacked a file.
 To build the packages yourself:
 
 ```sh
-cargo deb                                        # -> target/debian/npmfilter_0.5.4_amd64.deb
-cargo generate-rpm                               # -> target/generate-rpm/npmfilter-0.5.4-1.x86_64.rpm
-dpkg -c target/debian/npmfilter_0.5.4_amd64.deb  # inspect before installing
+cargo deb                                        # -> target/debian/npmfilter_0.5.5_amd64.deb
+cargo generate-rpm                               # -> target/generate-rpm/npmfilter-0.5.5-1.x86_64.rpm
+dpkg -c target/debian/npmfilter_0.5.5_amd64.deb  # inspect before installing
 ```
 
 `cargo deb` and `cargo generate-rpm` come from `cargo install cargo-deb
@@ -145,9 +145,9 @@ manager changes how every install in that scope resolves, and unpacking a `.deb`
 is not consent to that.
 
 Once adopted, the daemon is a hard dependency of installs in that scope. It runs
-`Restart=always` and a failure is loud rather than silent, but the dependency is
-real. If the daemon is down and the registry points at it, installs fail — the
-intended direction, since a security gate that fails open is not one.
+`Restart=always` and a failure is loud, but the dependency is real: if the daemon
+is down and the registry points at it, installs fail. That is the intended
+direction.
 
 ---
 
