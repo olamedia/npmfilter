@@ -36,6 +36,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
+      # reqwest 0.13 defaults to rustls over aws-lc, whose C sources are built with cmake.
+      # The hosted images ship it, but a runner that does not would fail deep inside a
+      # dependency build with a message that does not name the cause.
+      - name: Build dependencies for aws-lc
+        run: |
+          command -v cmake >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y cmake
+          }
+          cmake --version
+
       - name: Formatting
         run: cargo fmt --all --check
 
@@ -75,6 +86,17 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.kind }}
+
+      # reqwest 0.13 defaults to rustls over aws-lc, whose C sources are built with cmake.
+      # The hosted images ship it, but a runner that does not would fail deep inside a
+      # dependency build with a message that does not name the cause.
+      - name: Build dependencies for aws-lc
+        run: |
+          command -v cmake >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y cmake
+          }
+          cmake --version
 
       # Both packagers consume target/release/npmfilter. cargo-deb would build it
       # itself, but doing it explicitly keeps the two matrix legs identical and lets
