@@ -5,6 +5,12 @@
 //! stub registry, and the daemon itself through the same `npmfilter::proxy::run` entry point
 //! that `npmfilter serve` uses.
 
+// The shipped caps must stay generous enough for the largest real packuments — the largest
+// found on registry.npmjs.org was @types/node at 11.1 MB. Checked at compile time: asserting
+// a constant at runtime proves nothing the compiler could not prove for free.
+const _: () = assert!(npmfilter::proxy::MAX_PACKUMENT_VERSIONS >= 20_000);
+const _: () = assert!(npmfilter::proxy::MAX_PACKUMENT_BYTES >= 64 * 1024 * 1024);
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -459,7 +465,10 @@ async fn too_new_and_install_script_versions_are_withheld() {
         "the client must not be handed upstream-controlled text: {detail:?}"
     );
     assert!(detail.contains("install hook"), "detail was {detail:?}");
-    assert!(detail.contains("npmfilter inspect"), "detail was {detail:?}");
+    assert!(
+        detail.contains("npmfilter inspect"),
+        "detail was {detail:?}"
+    );
 
     // The operator still gets the command — in the audit log, which only the daemon and the
     // control socket can read.
@@ -976,10 +985,7 @@ async fn every_mutating_method_is_refused_with_the_same_actionable_error() {
             detail.contains("@yourscope:registry="),
             "the error says how to publish instead: {detail:?}"
         );
-        assert!(
-            detail.contains("--registry"),
-            "detail was {detail:?}"
-        );
+        assert!(detail.contains("--registry"), "detail was {detail:?}");
         assert!(
             detail.contains("holds no credentials"),
             "detail was {detail:?}"
@@ -1142,7 +1148,11 @@ async fn a_trailing_or_duplicated_slash_filters_exactly_like_the_canonical_path(
         );
         let packument: Value = response.json().await.expect("JSON");
         assert_eq!(version_keys(&packument), vec!["1.0.0"], "GET {path}");
-        assert_eq!(packument["dist-tags"]["latest"], json!("2.0.0"), "GET {path}");
+        assert_eq!(
+            packument["dist-tags"]["latest"],
+            json!("2.0.0"),
+            "GET {path}"
+        );
     }
 
     // The scoped form too, in every spelling.
@@ -1448,7 +1458,10 @@ async fn a_dot_segment_path_is_refused_and_never_reaches_upstream() {
         let (status, body) = harness.raw("GET", path, &[]).await;
         assert_eq!(status, 400, "GET {path} answered {status}: {body}");
         assert!(body.contains("invalid_path"), "GET {path}: {body}");
-        assert!(!body.contains("1.0.0"), "no packument leaked for {path}: {body}");
+        assert!(
+            !body.contains("1.0.0"),
+            "no packument leaked for {path}: {body}"
+        );
     }
 
     assert_eq!(
@@ -1521,7 +1534,12 @@ async fn an_unrecognised_method_to_a_package_path_is_refused_like_a_write() {
     let harness = start(vec![("widget", widget(HASH_A))], |_| {}).await;
 
     for verb in ["COPY", "PROPFIND", "OPTIONS", "FROB", "MKCOL", "TRACE"] {
-        for path in ["/widget", "/widget/1.0.0", "/@bypass/tool", "/-/package/widget/dist-tags"] {
+        for path in [
+            "/widget",
+            "/widget/1.0.0",
+            "/@bypass/tool",
+            "/-/package/widget/dist-tags",
+        ] {
             let method = reqwest::Method::from_bytes(verb.as_bytes()).expect("a method token");
             let response = harness
                 .client
@@ -1631,7 +1649,11 @@ async fn tarballs_hosted_away_from_the_upstream_are_recorded_once_per_package() 
     for _ in 0..3 {
         assert_eq!(harness.get("/widget").await.status(), StatusCode::OK);
     }
-    assert_eq!(harness.upstream_hits("widget"), 3, "each request re-fetched");
+    assert_eq!(
+        harness.upstream_hits("widget"),
+        3,
+        "each request re-fetched"
+    );
     assert_eq!(
         audit_events(&harness, "widget", "foreign_tarball"),
         1,
@@ -1699,9 +1721,6 @@ async fn an_upstream_packument_with_more_versions_than_the_cap_is_refused() {
             .expect("under the cap"),
         npmfilter::proxy::PackumentFetch::Document(_)
     ));
-
-    // The shipped cap is far above anything npm publishes.
-    assert!(npmfilter::proxy::MAX_PACKUMENT_VERSIONS >= 20_000);
 }
 
 #[tokio::test]
@@ -1717,7 +1736,4 @@ async fn an_upstream_packument_larger_than_the_cap_is_refused() {
         .expect_err("the body is far larger than 64 bytes");
     assert_eq!(error.code(), "packument_too_large");
     assert_eq!(error.status(), StatusCode::BAD_GATEWAY);
-
-    // The real cap is generous enough for the largest packuments npm publishes.
-    assert!(npmfilter::proxy::MAX_PACKUMENT_BYTES >= 64 * 1024 * 1024);
 }

@@ -57,10 +57,8 @@ fn run_tighten(home: &Path) {
 }
 
 fn temp_home(tag: &str) -> PathBuf {
-    let home = std::env::temp_dir().join(format!(
-        "npmfilter-postinst-{}-{tag}",
-        std::process::id()
-    ));
+    let home =
+        std::env::temp_dir().join(format!("npmfilter-postinst-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(&home).expect("temp state home");
     home

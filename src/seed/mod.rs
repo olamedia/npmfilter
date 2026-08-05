@@ -56,7 +56,9 @@ use thiserror::Error;
 
 use crate::config::Config;
 use crate::control::client::{ControlClient, send_blocking};
-use crate::control::protocol::{Answer, MAX_SEED_ENTRIES, Request, SeedArgs, SeedEntry, SeedResult};
+use crate::control::protocol::{
+    Answer, MAX_SEED_ENTRIES, Request, SeedArgs, SeedEntry, SeedResult,
+};
 use crate::control::{ClientError, LABEL_SEED};
 use crate::store::{NewRule, ScriptSet, StoreError, hex_encode};
 
@@ -298,7 +300,9 @@ impl SeedVerification {
     pub fn detail(&self) -> String {
         match self {
             SeedVerification::Verified { upstream } => {
-                format!("VERIFIED against {upstream}: the registry serves this exact hash and these exact install hooks for this version")
+                format!(
+                    "VERIFIED against {upstream}: the registry serves this exact hash and these exact install hooks for this version"
+                )
             }
             SeedVerification::Unverified { upstream } => format!(
                 "NOT VERIFIED (--offline): the pinned dist.integrity was read from a lockfile on \

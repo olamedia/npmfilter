@@ -318,10 +318,9 @@ mod tests {
             !config.allow_publish_passthrough,
             "mutating methods are refused unless the operator opts in"
         );
-        let parsed = Config::parse(
-            "socket_path = \"/tmp/x.sock\"\nallow_publish_passthrough = true\n",
-        )
-        .expect("both keys parse");
+        let parsed =
+            Config::parse("socket_path = \"/tmp/x.sock\"\nallow_publish_passthrough = true\n")
+                .expect("both keys parse");
         assert_eq!(parsed.socket_path, PathBuf::from("/tmp/x.sock"));
         assert!(parsed.allow_publish_passthrough);
     }

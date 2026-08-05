@@ -206,10 +206,14 @@ impl Upstream {
             });
         }
         let mut buffer: Vec<u8> = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|source| ProxyError::Upstream {
-            url: url.clone(),
-            source,
-        })? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|source| ProxyError::Upstream {
+                url: url.clone(),
+                source,
+            })?
+        {
             if buffer.len().saturating_add(chunk.len()) > limit {
                 return Err(ProxyError::PackumentTooLarge {
                     package: package.to_owned(),

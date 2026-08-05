@@ -485,7 +485,7 @@ fn the_actor_is_built_from_the_peer_and_the_label_is_only_decoration() {
     let rendered = actor.render();
     assert!(rendered.starts_with("uid=1000 pid=77 via="), "{rendered}");
     assert!(
-        !rendered.contains('\n') && !rendered.contains(' ' ) || rendered.matches(' ').count() == 2,
+        !rendered.contains('\n') && !rendered.contains(' ') || rendered.matches(' ').count() == 2,
         "the label cannot forge extra fields: {rendered}"
     );
     assert_eq!(rendered, "uid=1000 pid=77 via=cliuid0rootallow");
@@ -704,7 +704,9 @@ async fn a_seed_entry_for_a_version_upstream_does_not_publish_is_refused() {
 
     assert_eq!(result.refused, 1);
     assert!(
-        result.outcomes[0].detail.contains("publishes no such version"),
+        result.outcomes[0]
+            .detail
+            .contains("publishes no such version"),
         "{:?}",
         result.outcomes[0]
     );

@@ -204,8 +204,8 @@ pub fn serve_blocking(config: Config) -> anyhow::Result<()> {
     let listen = config.listen;
     let socket_path = config.socket_path.clone();
     let config = Arc::new(config);
-    let state =
-        AppState::new(Arc::clone(&config), Arc::clone(&store)).context("building the proxy state")?;
+    let state = AppState::new(Arc::clone(&config), Arc::clone(&store))
+        .context("building the proxy state")?;
     let service = Arc::new(
         ControlService::new(Arc::clone(&config), Arc::clone(&store))
             .context("building the control service")?,
@@ -434,7 +434,8 @@ fn percent_decode(segment: &str) -> String {
     while index < bytes.len() {
         if bytes[index] == b'%'
             && index + 2 < bytes.len()
-            && let (Some(high), Some(low)) = (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            && let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
         {
             out.push((high << 4) | low);
             index += 3;
@@ -855,7 +856,13 @@ async fn evaluate(
             );
         }
         if !cached && let Some(upstream_host) = upstream_host.as_deref() {
-            note_foreign_tarballs(store.as_ref(), &package, document.as_ref(), upstream_host, now);
+            note_foreign_tarballs(
+                store.as_ref(),
+                &package,
+                document.as_ref(),
+                upstream_host,
+                now,
+            );
         }
         Ok::<PolicyOutcome, ProxyError>(outcome)
     })
@@ -943,7 +950,9 @@ fn url_host(url: &str) -> Option<&str> {
     let (_, rest) = url.split_once("://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
     // `user:password@host` — the host is what comes after the last `@`.
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     if host.is_empty() { None } else { Some(host) }
 }
 

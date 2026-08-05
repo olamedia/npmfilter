@@ -1120,12 +1120,7 @@ fn observing_without_the_bump_compares_but_does_not_write() {
             .expect("observed"),
         LedgerCheck::Unseen
     );
-    assert!(
-        store
-            .ledger_entry("keyv", "5.1.0")
-            .expect("read")
-            .is_some()
-    );
+    assert!(store.ledger_entry("keyv", "5.1.0").expect("read").is_some());
 }
 
 /// The trait methods are infallible by signature, so a broken database has to be reported some
@@ -1308,11 +1303,19 @@ fn the_state_database_is_created_owner_only() {
         .record_rule(&NewRule::deny("keyv", "6.0.0"), now())
         .expect("write something so the WAL exists");
 
-    let mode = fs::metadata(&path).expect("the database exists").permissions().mode() & 0o777;
+    let mode = fs::metadata(&path)
+        .expect("the database exists")
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(mode, 0o600, "database mode was {mode:04o}");
 
     let dir = path.parent().expect("parent");
-    let dir_mode = fs::metadata(dir).expect("the directory exists").permissions().mode() & 0o777;
+    let dir_mode = fs::metadata(dir)
+        .expect("the directory exists")
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(dir_mode, 0o700, "directory mode was {dir_mode:04o}");
 
     // Anything that can read the WAL can read the rules it holds.

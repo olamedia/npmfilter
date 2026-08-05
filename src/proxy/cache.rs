@@ -195,7 +195,14 @@ impl PackumentCache {
             );
             return;
         }
-        make_room(&mut inner, self.ttl, self.max_entries, self.max_bytes, bytes, now);
+        make_room(
+            &mut inner,
+            self.ttl,
+            self.max_entries,
+            self.max_bytes,
+            bytes,
+            now,
+        );
         inner.bytes = inner.bytes.saturating_add(bytes);
         inner.entries.insert(
             key,
@@ -271,7 +278,7 @@ fn make_room(
         .iter()
         .map(|(key, entry)| (entry.stored, key.clone()))
         .collect();
-    by_age.sort_by(|left, right| left.0.cmp(&right.0));
+    by_age.sort_by_key(|(stored, _)| *stored);
     for (_, key) in by_age {
         if fits(inner, max_entries, max_bytes, incoming_bytes) {
             return;
@@ -282,8 +289,7 @@ fn make_room(
 
 /// Is there room for one more entry of `incoming_bytes`?
 fn fits(inner: &CacheInner, max_entries: usize, max_bytes: usize, incoming_bytes: usize) -> bool {
-    inner.entries.len() < max_entries
-        && inner.bytes.saturating_add(incoming_bytes) <= max_bytes
+    inner.entries.len() < max_entries && inner.bytes.saturating_add(incoming_bytes) <= max_bytes
 }
 
 /// Estimated retained size of a parsed document, in bytes.

@@ -14,13 +14,13 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
+use crate::control::LABEL_CLI;
 use crate::control::client::{ControlClient, send_blocking};
 use crate::control::protocol::{
     AllowArgs, Answer, DenyArgs, InspectArgs, Request, RulesArgs, StatusArgs,
 };
-use crate::control::LABEL_CLI;
 use crate::mcp::inspect::InspectReport;
-use crate::mcp::{RuleView, RulesReport, RuleWritten, StatusReport};
+use crate::mcp::{RuleView, RuleWritten, RulesReport, StatusReport};
 
 /// Local npm registry filtering daemon.
 #[derive(Debug, Parser)]
@@ -118,7 +118,6 @@ impl Command {
             Command::Seed { .. } => "seed",
         }
     }
-
 }
 
 /// Run one subcommand.
@@ -267,7 +266,10 @@ fn render_rule(rule: &RuleView) -> String {
         out.push_str(&format!("    pinned to       {integrity}\n"));
     }
     for hook in &rule.scripts {
-        out.push_str(&format!("    hook            {}: {}\n", hook.hook, hook.command));
+        out.push_str(&format!(
+            "    hook            {}: {}\n",
+            hook.hook, hook.command
+        ));
     }
     if let Some(scripts) = &rule.scripts_sha256 {
         out.push_str(&format!("    scripts sha256  {scripts}\n"));

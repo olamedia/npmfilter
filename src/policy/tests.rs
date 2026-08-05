@@ -548,7 +548,11 @@ fn allow_rule_with_stale_integrity_blocks_as_integrity_changed() {
     // The operator sees the value THEY pinned, and a fingerprint of what upstream now serves.
     // The upstream string itself is never reproduced — a hostile registry does not get to
     // choose text that npmfilter repeats.
-    assert!(record.detail.contains("sha512-approved"), "{}", record.detail);
+    assert!(
+        record.detail.contains("sha512-approved"),
+        "{}",
+        record.detail
+    );
     assert!(
         !record.detail.contains("sha512-different"),
         "the untrusted value must not be echoed: {}",
@@ -907,7 +911,9 @@ fn a_version_with_no_content_hash_at_all_is_withheld() {
         "{record:?}"
     );
     assert!(
-        record.detail.contains("no dist.integrity and no dist.shasum"),
+        record
+            .detail
+            .contains("no dist.integrity and no dist.shasum"),
         "{record:?}"
     );
     // It is still observed: the ledger records every version the daemon sees.

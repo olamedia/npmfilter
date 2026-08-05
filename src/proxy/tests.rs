@@ -458,7 +458,13 @@ fn every_error_answers_with_a_status_and_a_code() {
 /// verbatim proxy — every withheld version, unfiltered and unaudited.
 #[test]
 fn a_trailing_or_duplicated_slash_still_resolves_to_the_packument() {
-    for path in ["/widget", "/widget/", "//widget", "///widget//", "/widget//"] {
+    for path in [
+        "/widget",
+        "/widget/",
+        "//widget",
+        "///widget//",
+        "/widget//",
+    ] {
         assert_eq!(
             classify(path),
             Route::Packument("widget".to_owned()),
@@ -702,7 +708,11 @@ fn replacing_an_entry_frees_what_it_held() {
     let cache = PackumentCache::with_limits(Duration::from_secs(60), 8, 1024 * 1024);
     let key = CacheKey::new("widget", None);
     let start = Instant::now();
-    cache.insert_at(key.clone(), Arc::new(json!({ "blob": "x".repeat(2048) })), start);
+    cache.insert_at(
+        key.clone(),
+        Arc::new(json!({ "blob": "x".repeat(2048) })),
+        start,
+    );
     let big = cache.bytes();
     cache.insert_at(
         key.clone(),

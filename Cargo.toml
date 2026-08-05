@@ -1,6 +1,6 @@
 [package]
 name = "npmfilter"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Local npm registry filtering daemon: release-age and install-script gates with content-pinned manual approval"
 readme = "README.md"
@@ -60,7 +60,7 @@ assets = [
     ["target/release/npmfilter", "usr/bin/npmfilter", "755"],
     ["packaging/config.toml", "etc/npmfilter/config.toml", "644"],
     ["README.md", "usr/share/doc/npmfilter/README.md", "644"],
-    ["DESIGN.md", "usr/share/doc/npmfilter/DESIGN.md", "644"],
+    ["USAGE.md", "usr/share/doc/npmfilter/USAGE.md", "644"],
     ["SECURITY.md", "usr/share/doc/npmfilter/SECURITY.md", "644"],
 ]
 maintainer-scripts = "packaging/debian"
@@ -74,3 +74,51 @@ unit-name = "npmfilter"
 enable = false
 start = false
 restart-after-upgrade = false
+
+# RPM, via cargo-generate-rpm. The same payload as the .deb: the binary, the
+# conffile, the docs and the unit. `enable`/`start` are deliberately absent here
+# too — installing a package is not consent to start a daemon that every
+# `npm install` on the machine will then depend on.
+[package.metadata.generate-rpm]
+summary = "Local npm registry filtering daemon"
+license = "UNLICENSED"
+assets = [
+    { source = "target/release/npmfilter", dest = "/usr/bin/npmfilter", mode = "755" },
+    { source = "packaging/config.toml", dest = "/etc/npmfilter/config.toml", mode = "644", config = true },
+    { source = "packaging/systemd/npmfilter.service", dest = "/usr/lib/systemd/system/npmfilter.service", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/npmfilter/README.md", mode = "644", doc = true },
+    { source = "USAGE.md", dest = "/usr/share/doc/npmfilter/USAGE.md", mode = "644", doc = true },
+    { source = "SECURITY.md", dest = "/usr/share/doc/npmfilter/SECURITY.md", mode = "644", doc = true },
+]
+post_install_script = """
+getent group npmfilter >/dev/null || groupadd --system npmfilter
+getent passwd npmfilter >/dev/null || useradd --system --gid npmfilter \
+    --home-dir /var/lib/npmfilter --no-create-home \
+    --shell /sbin/nologin --comment "npmfilter registry filtering daemon" npmfilter
+if [ -d /var/lib/npmfilter ] && [ ! -L /var/lib/npmfilter ]; then
+    chown -h npmfilter:npmfilter /var/lib/npmfilter || :
+    chmod 0700 /var/lib/npmfilter || :
+fi
+%systemd_post npmfilter.service
+cat <<'NOTICE'
+
+npmfilter is installed. It is NOT running, and it is NOT enabled.
+
+    sudo systemctl enable --now npmfilter
+
+Nothing resolves through it until you adopt it — see
+/usr/share/doc/npmfilter/README.md. Seed first:
+
+    npmfilter seed ~/your-project --dry-run
+
+The threat model, including what is explicitly NOT defended, is in
+/usr/share/doc/npmfilter/SECURITY.md.
+
+NOTICE
+"""
+pre_uninstall_script = """
+%systemd_preun npmfilter.service
+"""
+post_uninstall_script = """
+%systemd_postun_with_restart npmfilter.service
+"""

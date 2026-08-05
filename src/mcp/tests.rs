@@ -746,10 +746,7 @@ async fn status_reports_the_policy_the_rule_counts_and_the_socket_transport() {
         report.transport.contains("unix socket"),
         "the shim no longer shares the database: {report:?}"
     );
-    assert!(
-        report.transport.contains("only writer"),
-        "{report:?}"
-    );
+    assert!(report.transport.contains("only writer"), "{report:?}");
 }
 
 #[tokio::test]
@@ -1192,10 +1189,7 @@ async fn a_streamed_tarball_that_blows_the_compressed_limit_is_abandoned() {
         Ok(_) => panic!("an oversized tarball must not be inspected"),
         Err(error) => error,
     };
-    assert!(
-        error.to_string().contains("compressed limit"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("compressed limit"), "{error}");
 }
 
 #[tokio::test]

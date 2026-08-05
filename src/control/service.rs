@@ -77,7 +77,13 @@ fn chain(error: &(dyn std::error::Error + 'static)) -> String {
 pub fn printable(raw: &str, limit: usize) -> String {
     raw.chars()
         .take(limit)
-        .map(|character| if character.is_control() { '.' } else { character })
+        .map(|character| {
+            if character.is_control() {
+                '.'
+            } else {
+                character
+            }
+        })
         .collect()
 }
 
@@ -128,11 +134,7 @@ impl ControlService {
     }
 
     /// Dispatch one validated request.
-    pub async fn dispatch(
-        &self,
-        request: Request,
-        actor: &Actor,
-    ) -> Result<Answer, ControlError> {
+    pub async fn dispatch(&self, request: Request, actor: &Actor) -> Result<Answer, ControlError> {
         match request {
             Request::Status(_) => Ok(Answer::Status(Box::new(self.status().await?))),
             Request::RecentBlocks(args) => Ok(Answer::RecentBlocks(Box::new(
@@ -152,9 +154,7 @@ impl ControlService {
             Request::Rules(args) => Ok(Answer::Rules(Box::new(
                 self.rules(args.package, args.verdict.as_deref()).await?,
             ))),
-            Request::Ledger(args) => {
-                Ok(Answer::Ledger(Box::new(self.ledger(args.package).await?)))
-            }
+            Request::Ledger(args) => Ok(Answer::Ledger(Box::new(self.ledger(args.package).await?))),
             Request::Seed(args) => Ok(Answer::Seed(Box::new(self.seed(args, actor).await?))),
         }
     }
@@ -494,11 +494,7 @@ impl ControlService {
     /// does not take its word for anything: for every entry it fetches the packument upstream
     /// and confirms both the integrity **and** the install-hook commands match what the
     /// registry actually serves. An entry that does not match gets no rule and is reported.
-    pub async fn seed(
-        &self,
-        args: SeedArgs,
-        actor: &Actor,
-    ) -> Result<SeedResult, ControlError> {
+    pub async fn seed(&self, args: SeedArgs, actor: &Actor) -> Result<SeedResult, ControlError> {
         let SeedArgs {
             root,
             dry_run,

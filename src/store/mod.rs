@@ -763,8 +763,8 @@ impl Store {
         let transaction = conn.transaction_with_behavior(behaviour)?;
         let mut checks = Vec::with_capacity(observations.len());
         {
-            let mut select =
-                transaction.prepare("SELECT integrity FROM seen WHERE name = ?1 AND version = ?2")?;
+            let mut select = transaction
+                .prepare("SELECT integrity FROM seen WHERE name = ?1 AND version = ?2")?;
             let mut insert = transaction.prepare(
                 "INSERT INTO seen (name, version, integrity, first_seen_ts, last_seen_ts, times_seen,
                                    mismatch_count, last_mismatch_ts)
@@ -941,10 +941,9 @@ impl Store {
             for record in blocked {
                 let entry = AuditEntry::block(name, record, now);
                 let previous: Option<String> = latest
-                    .query_row(
-                        params![entry.name, entry.version, entry.event],
-                        |row| row.get(0),
-                    )
+                    .query_row(params![entry.name, entry.version, entry.event], |row| {
+                        row.get(0)
+                    })
                     .optional()?;
                 // `AuditEntry::block` writes `"<reason>: <detail>"`, and the detail itself moves
                 // (the age gate renders a live age), so the reason prefix is what identifies a
@@ -974,7 +973,10 @@ impl Store {
     /// forever. `npmfilter serve` calls this once at startup with the configured retention.
     pub fn prune_audit(&self, before: DateTime<Utc>) -> Result<usize, StoreError> {
         let conn = self.lock();
-        let removed = conn.execute("DELETE FROM audit WHERE ts < ?1", params![before.timestamp()])?;
+        let removed = conn.execute(
+            "DELETE FROM audit WHERE ts < ?1",
+            params![before.timestamp()],
+        )?;
         Ok(removed)
     }
 

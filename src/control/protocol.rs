@@ -111,11 +111,15 @@ pub enum ValidationError {
     BadIntegrity { field: &'static str },
     #[error("{field} is not one of the install hooks npm runs for a registry tarball")]
     BadHook { field: &'static str },
-    #[error("a seed request may carry at most {MAX_SEED_ENTRIES} packages, this one carries {count}")]
+    #[error(
+        "a seed request may carry at most {MAX_SEED_ENTRIES} packages, this one carries {count}"
+    )]
     TooManySeedEntries { count: usize },
     #[error("verdict must be \"allow\" or \"deny\"")]
     BadVerdict,
-    #[error("this npmfilter speaks control protocol {PROTOCOL_VERSION}, the request declared {found}")]
+    #[error(
+        "this npmfilter speaks control protocol {PROTOCOL_VERSION}, the request declared {found}"
+    )]
     ProtocolVersion { found: u32 },
 }
 
@@ -347,7 +351,10 @@ impl Request {
 
     /// Whether serving this request writes to the state database.
     pub fn is_mutation(&self) -> bool {
-        matches!(self, Request::Allow(_) | Request::Deny(_) | Request::Seed(_))
+        matches!(
+            self,
+            Request::Allow(_) | Request::Deny(_) | Request::Seed(_)
+        )
     }
 }
 
@@ -544,9 +551,9 @@ pub fn package_name(field: &'static str, value: &str) -> Result<(), ValidationEr
 fn is_name_part(part: &str) -> bool {
     !part.is_empty()
         && !part.starts_with(['.', '_', '-'])
-        && part
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_' | '~'))
+        && part.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_' | '~')
+        })
 }
 
 /// An exact published version. Every version npm serves is valid semver.

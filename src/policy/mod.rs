@@ -199,11 +199,7 @@ pub struct BlockRecord {
 
 impl BlockRecord {
     /// A record whose client-facing detail is the generic wording for its gate.
-    pub fn new(
-        version: impl Into<String>,
-        reason: BlockReason,
-        detail: impl Into<String>,
-    ) -> Self {
+    pub fn new(version: impl Into<String>, reason: BlockReason, detail: impl Into<String>) -> Self {
         Self {
             version: version.into(),
             reason,

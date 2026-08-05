@@ -498,8 +498,7 @@ fn a_directory_that_claims_another_packages_name_is_refused() {
     assert!(report.unpinnable.is_empty());
     assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
     assert!(
-        report.warnings[0].contains("node_modules/handy")
-            && report.warnings[0].contains("esbuild"),
+        report.warnings[0].contains("node_modules/handy") && report.warnings[0].contains("esbuild"),
         "{}",
         report.warnings[0]
     );
@@ -593,7 +592,11 @@ fn a_manifest_version_that_contradicts_the_lockfile_is_refused() {
     let report = scan(&node_modules, now()).expect("scan succeeds");
     assert!(report.approved.is_empty(), "{:?}", report.approved);
     assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
-    assert!(report.warnings[0].contains("0.21.5"), "{}", report.warnings[0]);
+    assert!(
+        report.warnings[0].contains("0.21.5"),
+        "{}",
+        report.warnings[0]
+    );
 }
 
 #[test]

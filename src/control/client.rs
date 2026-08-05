@@ -13,8 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use super::protocol::{
-    Answer, CLIENT_TIMEOUT, Failure, MAX_RESPONSE_BYTES, Request, RequestEnvelope,
-    ResponseEnvelope,
+    Answer, CLIENT_TIMEOUT, Failure, MAX_RESPONSE_BYTES, Request, RequestEnvelope, ResponseEnvelope,
 };
 
 /// Anything that can go wrong talking to the daemon.
@@ -121,27 +120,31 @@ impl ControlClient {
 
     /// Connect, write the frame, read the answer.
     async fn exchange(&self, frame: Vec<u8>) -> Result<Vec<u8>, ClientError> {
-        let mut stream = UnixStream::connect(&self.path).await.map_err(|source| {
-            match source.kind() {
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
-                    ClientError::NotRunning {
-                        path: self.path.clone(),
+        let mut stream =
+            UnixStream::connect(&self.path)
+                .await
+                .map_err(|source| match source.kind() {
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+                        ClientError::NotRunning {
+                            path: self.path.clone(),
+                        }
                     }
-                }
-                io::ErrorKind::PermissionDenied => ClientError::Denied {
-                    path: self.path.clone(),
-                },
-                _ => ClientError::Io {
-                    path: self.path.clone(),
-                    source,
-                },
-            }
-        })?;
+                    io::ErrorKind::PermissionDenied => ClientError::Denied {
+                        path: self.path.clone(),
+                    },
+                    _ => ClientError::Io {
+                        path: self.path.clone(),
+                        source,
+                    },
+                })?;
 
-        stream.write_all(&frame).await.map_err(|source| ClientError::Io {
-            path: self.path.clone(),
-            source,
-        })?;
+        stream
+            .write_all(&frame)
+            .await
+            .map_err(|source| ClientError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
         stream.flush().await.map_err(|source| ClientError::Io {
             path: self.path.clone(),
             source,
@@ -150,10 +153,13 @@ impl ControlClient {
         let mut answer = Vec::with_capacity(4096);
         let mut chunk = [0u8; 16 * 1024];
         loop {
-            let read = stream.read(&mut chunk).await.map_err(|source| ClientError::Io {
-                path: self.path.clone(),
-                source,
-            })?;
+            let read = stream
+                .read(&mut chunk)
+                .await
+                .map_err(|source| ClientError::Io {
+                    path: self.path.clone(),
+                    source,
+                })?;
             if read == 0 {
                 break;
             }
