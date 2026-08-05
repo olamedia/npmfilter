@@ -1,0 +1,97 @@
+# npmfilter — /etc/npmfilter/config.toml
+#
+# This file is a dpkg conffile: your edits survive package upgrades, and dpkg
+# will ask before replacing it. The values below are the built-in defaults, so
+# deleting a key changes nothing.
+#
+# An UNKNOWN key is a hard error and the daemon refuses to start. A typo'd
+# `bypass_scope` or `min_age_day` that silently did nothing would leave you
+# believing in a policy npmfilter is not enforcing.
+#
+# The daemon's hard limits are NOT here and are not configurable: the upstream
+# body cap, the packument cache capacity, the tarball limits `inspect` streams
+# under, the control-socket frame size and the connection ceilings are all
+# compile-time constants. A config field for a hard limit is a way to weaken the
+# daemon. They are documented in SECURITY.md.
+#
+# Reload after editing:  sudo systemctl restart npmfilter
+
+# Address the filtering proxy listens on. Loopback only by default: npmfilter
+# forwards the client's Authorization header upstream, so it must not be
+# reachable by anything you do not trust.
+listen = "127.0.0.1:4874"
+
+# Registry npmfilter fetches packuments from. Tarballs are NOT proxied —
+# dist.tarball is left pointing here, so lockfiles stay portable.
+upstream = "https://registry.npmjs.org"
+
+# A version younger than this many days is withheld. This is the quarantine
+# window, and it doubles as the observation window for the integrity ledger:
+# a version published today has its hash recorded today and is only served
+# once that hash has held still for the full period. 0 disables the age gate.
+min_age_days = 30
+
+# Scopes exempt from the age and install-script gates — your own packages,
+# which you publish and therefore already vouch for. The integrity ledger and
+# explicit deny rules still apply. Example: ["@olamedia"]
+bypass_scopes = []
+
+# How long a fetched packument is reused, in seconds. Metadata only, held in
+# memory, never written to disk. What is cached is the unfiltered upstream
+# document and the policy is re-run per request, so a new approval takes
+# effect on the next request rather than after this window.
+packument_ttl_secs = 60
+
+# How many days of audit rows to keep. `npmfilter serve` prunes at startup and
+# every 6 hours thereafter, so a machine that reinstalls on a schedule cannot
+# grow rules.db without bound. 0 keeps everything.
+#
+# The same maintenance pass prunes the integrity ledger, on a fixed 365-day
+# retention that is NOT configurable: a row that ever recorded a mismatch, and a
+# row named by a rule, are kept whatever their age.
+audit_retention_days = 90
+
+# Tracing filter directive. RUST_LOG in the unit's environment overrides it.
+log_level = "info"
+
+# SQLite database holding the rules, the integrity ledger and the audit log.
+# The packaged unit uses systemd's StateDirectory=npmfilter, which creates
+# /var/lib/npmfilter owned by the npmfilter user, mode 0700. The database itself
+# is 0600 and `npmfilter serve` is the only process that opens it. Change this
+# only if you also change the unit.
+state_path = "/var/lib/npmfilter/rules.db"
+
+# The Unix socket `npmfilter mcp`, `npmfilter allow` and every other subcommand
+# talk to. Mode 0660, owned by npmfilter:npmfilter; the packaged unit creates
+# /run/npmfilter with RuntimeDirectory=npmfilter. Membership of group npmfilter
+# is the right to ask the daemon to approve a package — grant it as deliberately
+# as you would `docker`.
+socket_path = "/run/npmfilter/npmfilter.sock"
+
+# Whether mutating HTTP methods are relayed upstream instead of refused.
+#
+# false (the default) refuses PUT, DELETE, PATCH and POST-to-a-package-path with
+# an actionable error: npmfilter is a read-through filter and holds no
+# credentials, so a publish does not belong here. Send it to the right registry
+# with a scoped `@yourscope:registry=` entry in .npmrc, or an explicit
+# --registry.
+#
+# true relays them AND writes every one to the audit log with its method, path
+# and the peer that sent it. The Authorization value is never logged; that one
+# was used is.
+allow_publish_passthrough = false
+
+# Whether a `dist-tags` entry whose target was withheld may be moved onto an older
+# surviving release.
+#
+# false (the default) leaves every tag exactly as upstream published it, so `latest`
+# always means latest. A client asking for a withheld version fails to resolve and is
+# told which gate stopped it — it is never quietly handed an older release instead.
+#
+# true restores the old behaviour, and you should understand what it does before
+# setting it. Observed live: sqlite3 had 102 of its 104 versions withheld, `latest`
+# moved from 6.0.1 to 2.1.3 (published 2014), and the install then died inside
+# node-gyp with nothing in the output naming npmfilter. Older releases are also the
+# ones carrying known vulnerabilities: a security gate that silently downgrades you
+# is doing harm, not preventing it.
+allow_dist_tag_downgrade = false

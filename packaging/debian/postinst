@@ -1,0 +1,211 @@
+#!/bin/sh
+#
+# npmfilter postinst — create the system account the unit runs as, then let the
+# systemd fragments below wire up the service.
+#
+# This script deliberately does NOT touch any user's ~/.npmrc, ~/.bunfig.toml
+# or any project file. Pointing a package manager at npmfilter changes how
+# every install in that scope resolves, which is the operator's decision, not
+# the packaging's. Adoption is printed here and applied by you.
+
+set -e
+
+NPMFILTER_USER=npmfilter
+NPMFILTER_GROUP=npmfilter
+NPMFILTER_HOME=/var/lib/npmfilter
+NPMFILTER_LISTEN=http://127.0.0.1:4874/
+NPMFILTER_SOCKET=/run/npmfilter/npmfilter.sock
+
+create_system_account() {
+    if ! getent group "$NPMFILTER_GROUP" >/dev/null 2>&1; then
+        if command -v addgroup >/dev/null 2>&1; then
+            addgroup --system --quiet "$NPMFILTER_GROUP"
+        else
+            groupadd --system "$NPMFILTER_GROUP"
+        fi
+    fi
+
+    if getent passwd "$NPMFILTER_USER" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if command -v adduser >/dev/null 2>&1; then
+        adduser --system --quiet \
+                --ingroup "$NPMFILTER_GROUP" \
+                --home "$NPMFILTER_HOME" --no-create-home \
+                --shell /usr/sbin/nologin \
+                --gecos "npmfilter registry filtering daemon" \
+                "$NPMFILTER_USER"
+    else
+        useradd --system \
+                --gid "$NPMFILTER_GROUP" \
+                --home-dir "$NPMFILTER_HOME" --no-create-home \
+                --shell /usr/sbin/nologin \
+                --comment "npmfilter registry filtering daemon" \
+                "$NPMFILTER_USER"
+    fi
+}
+
+# --- BEGIN state-directory tightening (extracted verbatim by tests/packaging.rs) ---
+#
+# The state database holds the approval policy: anything that can write it can
+# approve any package on this machine. Earlier versions of this package shipped
+# it group-writable, because the MCP shim used to open it directly. It does not
+# any more — everything goes through the daemon's control socket — so tighten
+# what an upgrade may have left behind.
+#
+# This runs as root, and `chown` and `chmod` follow symlinks. The npmfilter
+# account owns $NPMFILTER_HOME, so a compromised daemon account could replace
+# rules.db with a link to, say, /etc/shadow and wait for the next `dpkg`
+# configure to hand it root's chown and chmod — turning an unprivileged account
+# into ownership of an arbitrary file. Three things stop that here:
+#
+#   * every path is checked to be a real, unshared, regular file first;
+#   * `chown -h` never dereferences, so a link that appears anyway is not
+#     followed;
+#   * the `chmod` is dropped to the daemon's own account when that is possible,
+#     so even winning the race between the check and the call gains an attacker
+#     nothing they did not already have.
+#
+# A path that fails any check is reported and left exactly as it is. Refusing to
+# touch it is always safe: the daemon sets its own file modes when it opens the
+# database.
+set_state_file_mode() {
+    npmfilter_file="$1"
+    [ -e "$npmfilter_file" ] || return 0
+
+    if [ -L "$npmfilter_file" ]; then
+        echo "npmfilter: $npmfilter_file is a symbolic link; refusing to chown or chmod it." >&2
+        echo "npmfilter: inspect it by hand — the daemon never creates one." >&2
+        return 0
+    fi
+    if [ ! -f "$npmfilter_file" ]; then
+        echo "npmfilter: $npmfilter_file is not a regular file; leaving it alone." >&2
+        return 0
+    fi
+    npmfilter_links=$(stat -c %h "$npmfilter_file" 2>/dev/null || echo 1)
+    if [ "$npmfilter_links" != "1" ]; then
+        echo "npmfilter: $npmfilter_file has $npmfilter_links hard links; refusing to chmod it." >&2
+        return 0
+    fi
+
+    chown -h "$NPMFILTER_USER:$NPMFILTER_GROUP" "$npmfilter_file" 2>/dev/null || true
+    if [ "$(id -u)" = "0" ] && command -v runuser >/dev/null 2>&1; then
+        runuser -u "$NPMFILTER_USER" -- chmod 0600 "$npmfilter_file" 2>/dev/null || true
+    else
+        chmod 0600 "$npmfilter_file" 2>/dev/null || true
+    fi
+}
+
+tighten_state_directory() {
+    [ -e "$NPMFILTER_HOME" ] || return 0
+    if [ -L "$NPMFILTER_HOME" ]; then
+        echo "npmfilter: $NPMFILTER_HOME is a symbolic link; refusing to chown or chmod it." >&2
+        return 0
+    fi
+    [ -d "$NPMFILTER_HOME" ] || return 0
+
+    chown -h "$NPMFILTER_USER:$NPMFILTER_GROUP" "$NPMFILTER_HOME" 2>/dev/null || true
+    chmod 0700 "$NPMFILTER_HOME" 2>/dev/null || true
+
+    for npmfilter_state in "$NPMFILTER_HOME"/rules.db "$NPMFILTER_HOME"/rules.db-wal \
+                           "$NPMFILTER_HOME"/rules.db-shm; do
+        set_state_file_mode "$npmfilter_state"
+    done
+}
+# --- END state-directory tightening ---
+
+print_adoption_notice() {
+    cat <<EOF
+
+npmfilter is installed. It is NOT running, and it is NOT enabled.
+
+Installing a package is not consent to start a daemon that every npm install on
+this machine will then depend on. Both switches are yours to throw:
+
+       sudo systemctl start npmfilter      # run it now
+       sudo systemctl enable npmfilter     # and on every boot
+       sudo systemctl enable --now npmfilter    # both at once
+
+       systemctl status npmfilter
+       curl -s ${NPMFILTER_LISTEN}is-odd | head -c 200
+
+Once it is up, nothing resolves through it until you adopt it:
+
+1. Seed the packages you already build with. Every version carrying a
+   preinstall/install/postinstall hook is withheld until approved, so without
+   this the first install after adoption stops on esbuild, sqlite3 and friends.
+   The daemon checks every hash against the registry before it approves
+   anything. Review it first, then apply:
+
+       npmfilter seed ~/your-project --dry-run
+       npmfilter seed ~/your-project
+
+   Seeding approves the CURRENT state of that tree. Only seed a tree you
+   installed from a lockfile you trust.
+
+2. Point a package manager at it. Per project (reversible, easy to review):
+
+       echo 'registry=${NPMFILTER_LISTEN}' >> .npmrc
+
+   Or for every npm project of the current user:
+
+       npm config set registry ${NPMFILTER_LISTEN}
+       npm config delete registry          # to undo
+
+   bun reads its own file — add to ./bunfig.toml or ~/.bunfig.toml:
+
+       [install]
+       registry = "${NPMFILTER_LISTEN}"
+
+3. When an install stops on a withheld package, approve it deliberately over
+   MCP. Register the shim with your agent:
+
+       command: /usr/bin/npmfilter
+       args:    ["mcp"]
+
+   then npmfilter_recent_blocks -> npmfilter_inspect -> npmfilter_allow.
+
+   Every approval — from an agent or from a terminal — is a request to the
+   daemon over ${NPMFILTER_SOCKET}, which validates it, records who
+   asked and writes the rule itself. Nothing but the daemon opens the state
+   database. To be allowed to ask:
+
+       sudo adduser \$USER ${NPMFILTER_GROUP}    # then log in again
+
+   That membership is the right to approve any package on this machine. Grant it
+   as deliberately as you would \`docker\`. The alternative is to run the
+   commands as the daemon's own user: sudo -u ${NPMFILTER_USER} npmfilter ...
+
+Policy lives in /etc/npmfilter/config.toml (30-day quarantine by default). An
+unknown key there is a hard error and the daemon will refuse to start.
+Status: systemctl status npmfilter   Logs: journalctl -u npmfilter
+Read /usr/share/doc/npmfilter/SECURITY.md for the threat model — in particular,
+the gate is resolution-time only, so \`npm ci\` against an existing lockfile
+bypasses it entirely.
+
+EOF
+}
+
+case "$1" in
+    configure)
+        create_system_account
+        tighten_state_directory
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+case "$1" in
+    configure)
+        print_adoption_notice
+        ;;
+esac
+
+exit 0

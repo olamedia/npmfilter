@@ -1,0 +1,80 @@
+[Unit]
+Description=npmfilter — local npm registry filtering daemon
+Documentation=file:/usr/share/doc/npmfilter/README.md
+Documentation=file:/usr/share/doc/npmfilter/SECURITY.md
+# Resolution goes upstream on every packument miss, so the daemon is useless
+# until routing is up. It still starts fine without it — requests just fail
+# until the network arrives.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/npmfilter serve
+User=npmfilter
+Group=npmfilter
+
+# Once a package manager points at npmfilter, the daemon is a hard dependency
+# of every install. Always come back.
+Restart=always
+RestartSec=2s
+
+# Creates /var/lib/npmfilter owned by npmfilter:npmfilter, and passes it through
+# ProtectSystem=strict as the one writable path. 0700 and UMask=0077: the state
+# database holds the approval policy, and anything that can write it can approve
+# any package on this machine. The daemon is its only reader and its only writer
+# — `npmfilter mcp` and the CLI reach it over the control socket below, never by
+# opening the file.
+StateDirectory=npmfilter
+StateDirectoryMode=0700
+UMask=0077
+
+# Creates /run/npmfilter for the control socket. 0750 so group `npmfilter` can
+# traverse it; the socket itself is 0660, set by the daemon after it binds (the
+# umask above means it is created owner-only and widened deliberately, never the
+# other way round). Membership of that group is the right to ASK the daemon to
+# approve a package — a request it validates, attributes to the peer's uid and
+# audits. It is no longer the ability to write allow rules straight into the
+# database, which is what group-writable state used to mean.
+RuntimeDirectory=npmfilter
+RuntimeDirectoryMode=0750
+
+# Backstop only. The daemon bounds its own memory — the packument cache holds at
+# most 1024 documents, an upstream body is read under a hard byte cap and a
+# control frame under another — so hitting this means something is wrong, and Restart=always brings it back
+# rather than letting it take the machine down with it.
+MemoryMax=1G
+
+# Hardening. The daemon reads one config file, writes one database, listens on
+# one loopback port and one unix socket, and talks HTTPS upstream; nothing else
+# needs to be reachable.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# AF_UNIX is required twice over: the control socket, and glibc resolving
+# upstream through nss/systemd-resolved. Without it DNS fails and nothing is
+# served.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

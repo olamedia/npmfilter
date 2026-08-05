@@ -1,0 +1,29 @@
+# Build output
+/target
+
+# Runtime state — the rules store, integrity ledger and audit log. Machine-local, and it
+# records exactly which packages an operator approved. Never publish it.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Packaging output
+*.deb
+*.rpm
+
+# Secrets and local overrides
+.env
+.env.*
+config.local.toml
+
+# Planning / design records, kept out of the published repo
+DESIGN.md
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
